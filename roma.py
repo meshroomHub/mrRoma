@@ -3,6 +3,7 @@ import os
 
 import numpy as np
 from PIL import Image
+import cv2
 
 # FIXME: hardcoded
 MASK_EXTENTION = ".png"
