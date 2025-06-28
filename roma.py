@@ -21,9 +21,9 @@ def save_image(path, image):
         outfile.write(path)
 
 def open_image(path):
-    import pyalicevision as av
-    import image as img
-    image=img.Image_RGBfColor()
+    from pyalicevision import image as img
+    # import image as img
+    image = img.Image_RGBfColor()
     optRead = img.ImageReadOptions(img.EImageColorSpace_NO_CONVERSION)
     img.readImage(path, image, optRead)
     return image.getNumpyArray()
@@ -53,10 +53,10 @@ def prepare_roma_outputs(w, c):
     return w, c
 
 def open_sfm(inputSfMData):
-    import pyalicevision as av
+    from pyalicevision import sfmData, sfmDataIO
     print("Loading sfm data")
-    data = av.sfmData.SfMData()
-    ret = av.sfmDataIO.load(data, inputSfMData, av.sfmDataIO.ALL)
+    data = sfmData.SfMData()
+    ret = sfmDataIO.load(data, inputSfMData, sfmDataIO.ALL)
     if not ret:
         raise RuntimeError("Error with sfm data")
     views = data.getViews()
@@ -66,10 +66,11 @@ def open_sfm(inputSfMData):
     print(views)
     # utils variables
     images_uids = [v for v in views.keys()]
-    print(views[images_uids[0]].getImage().getImagePath())
+    print("First image path: " + views[images_uids[0]].getImage().getImagePath())
     images_paths = [v.getImage().getImagePath() for v in views.values()]
-    oW, oH = int(views[images_uids[0]].getImage().getWidth()), int(views[images_uids[0]].getImage().getHeight())
-    return images_uids,images_paths, (oW, oH)
+    firstImg = views[images_uids[0]].getImage()
+    oW, oH = int(firstImg.getWidth()), int(firstImg.getHeight())
+    return images_uids, images_paths, (oW, oH)
 
 def get_keyframe_indices(images_uids, keyframeSteps=0, keyFrameSfMData=""):
     # if any, will load keyframe indices from another sfm
