@@ -6,7 +6,7 @@ from PIL import Image
 import cv2
 
 # FIXME: hardcoded
-MASK_EXTENTION = ".png"
+MASK_EXTENTION = "exr"
 # roma working size
 H, W = 864, 864
 # device to run roma on
@@ -238,7 +238,8 @@ def compute_tracks(inputSfMData, keyFrameSfMData, keyframeSteps,
             mask_file=os.path.join(maskFolder, str(images_uids_kf[i]))+"."+MASK_EXTENTION
             mask = open_image(mask_file)
             mask = cv2.resize(mask, (W, H))
-            if len(mask.shape)>3:
+            if len(mask.shape) > 2:
+                # If RGB, convert to single channel (keep the first one)
                 mask = mask[:,:,0]
             print("  Done")
         # save the warps and certainties
@@ -423,7 +424,6 @@ def export_matches(inputSfMData, keyFrameSfMData, keyframeSteps,
             write_descriptor_file(np.zeros([len(features), 128]),
                                     os.path.join(outputFolder,str(uid)+"."+desc_type+".desc"))       
     print("Done")
-
 
 import argparse
 
