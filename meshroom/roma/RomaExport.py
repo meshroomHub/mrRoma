@@ -1,6 +1,7 @@
 __version__ = "2.0"
 
-import os 
+import os
+from pathlib import Path
 
 from meshroom.core import desc
 
@@ -10,10 +11,9 @@ class RomaExport(desc.CommandLineNode):
     documentation = """"""
     gpu = desc.Level.INTENSIVE
 
+    exePath = (Path(__file__).absolute().parent.parent.parent / "roma.py").as_posix()
 
-    exePath=os.path.join(os.path.dirname(os.path.abspath(__file__)), "roma.py")
-
-    commandLine="rez env roma-develop -- python "+exePath+" export {allParams}"
+    commandLine="python "+exePath+" export {allParams}"
 
     inputs = [
         desc.File(
@@ -43,14 +43,14 @@ class RomaExport(desc.CommandLineNode):
             advanced=False,
             enabled=lambda node: node.keyFrameSfMData.value == "",
         ),
-        
+
         desc.File(
             name="maskFolder",
             label="maskFolder",
             description="Input mask folder.",
             value="",
         ),
- 
+
         desc.FloatParam(
             name="confThreshold",
             label="confThreshold",

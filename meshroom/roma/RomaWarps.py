@@ -1,6 +1,7 @@
 __version__ = "2.0"
 
-import os 
+import os
+from pathlib import Path
 
 from meshroom.core import desc
 
@@ -11,9 +12,9 @@ class RomaWarp(desc.CommandLineNode):
     gpu = desc.Level.INTENSIVE
 
 
-    exePath=os.path.join(os.path.dirname(os.path.abspath(__file__)), "roma.py")
+    exePath = (Path(__file__).absolute().parent.parent.parent / "roma.py").as_posix()
 
-    commandLine="rez env roma-develop -- python "+exePath+" warp {allParams}"
+    commandLine="python "+exePath+" warp {allParams}"
 
     inputs = [
         desc.File(
