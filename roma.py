@@ -82,7 +82,6 @@ def get_keyframe_indices(images_uids, keyframeSteps=0, keyFrameSfMData=""):
         images_uids_kf = [v["viewId"] for v in sfm_data_kf["views"]]
         keyframes_indices = np.where(np.isin(images_uids, images_uids_kf))[0]
         print(keyframes_indices)
-        raise RuntimeError("Not sure implemented ok yet")
     # will just uniform  keyframe sampling otherwise
     elif keyframeSteps!=0:
         keyframes_indices = range(0, len(images_uids), keyframeSteps)
