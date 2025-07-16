@@ -2,18 +2,23 @@ __version__ = "1.0"
 
 import os 
 from pathlib import Path
+
 from meshroom.core import desc
 
-class RomaSampler(desc.CommandLineNode):
+class RomaMatcher(desc.CommandLineNode):
 
     category = "ROMA"
     documentation = """"""
+    size = desc.DynamicNodeSize('inputSfMData')
     gpu = desc.Level.INTENSIVE
 
+    parallelization = desc.Parallelization(blockSize=40)
+    commandLineRange = "--rangeIteration {rangeIteration} --rangeBlocksCount {rangeBlocksCount}"
+    
 
-    exePath = (Path(__file__).absolute().parent.parent.parent / "romaProcessor.py").as_posix()
+    exePath = (Path(__file__).absolute().parent.parent.parent / "matcher.py").as_posix()
 
-    commandLine="python "+exePath+" sample {allParams}"
+    commandLine="python "+exePath+" {allParams}"
 
     inputs = [
         desc.File(
@@ -28,11 +33,11 @@ class RomaSampler(desc.CommandLineNode):
             description="Path to a file which contains the list of image pairs to match.",
             value="",
         ),
-        desc.File(
-            name="warpFolder",
-            label="warp folder",
-            description="",
-            value=""
+        desc.BoolParam(
+            name="checkLoops",
+            label="Check loop consitency",
+            description="Check that there is a consistency between A-B and B-A.",
+            value=False
         )
     ]
 
