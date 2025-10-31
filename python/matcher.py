@@ -9,6 +9,7 @@ import os
 def prepare_warp(w):
     """ Transform the warp tensor from roma to a RGB image with B value being always 1 """
     w = ((w + 1.0) / 2.0).detach().cpu().numpy()
+    
     w = np.concatenate([w, np.zeros([w.shape[0], w.shape[1], 1], dtype=np.float32)], axis=-1)
     return w
 
@@ -26,10 +27,10 @@ def prepare_roma_outputs(w, c, upsampleResolution):
     H = upsampleResolution[0]
     W = upsampleResolution[1]
 
-    w_a_b = w[:, :W, 2:4]
-    c_a_b = c[:, :W]
-    w_b_a = w[:, W:, 0:2]
-    c_b_a = c[:, W:]
+    w_a_b = w[0, :, :W, 2:4]
+    c_a_b = c[0, :, :W]
+    w_b_a = w[0, :, W:, 0:2]
+    c_b_a = c[0, :, W:]
     
     return prepare_warp(w_a_b), prepare_warp(w_b_a), prepare_confidence(c_a_b), prepare_confidence(c_b_a)
 
@@ -68,13 +69,14 @@ def checkUncertaintyLoops(warp_A_B, warp_B_A, certainty_A_B, certainty_B_A, upsa
     c = maxuncertainty.reshape(H, W, 1)    
     np.minimum(certainty_A_B, c, out=certainty_A_B)
 
-def compute_densematches(inputSfMData, imagePairsList, outputFolder, checkLoops, rangeIteration, rangeBlocksCount):
+def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputCertaintyFolder, checkLoops, rangeIteration, rangeBlocksCount):
     """ This high level function is computing the warp between pairs of images
 
     Parameters:
         inputSfmData : the sfmData containing the descriptions of the images to match
         imagePairsList : a list of pair of images uids which list the warp to compute
-        outputFolder : a destination folder for the warp images
+        outputWarpFolder : a destination folder for the warp images
+        outputCertaintyFolder : a destination folder for the certainty images
     """
     
     upsampleResolution = (864, 864)
@@ -122,8 +124,8 @@ def compute_densematches(inputSfMData, imagePairsList, outputFolder, checkLoops,
 
         print("saving matches")
         pair_string = str(referenceId) + "_" + str(otherId)
-        path_warp = os.path.join(outputFolder, pair_string + "_warp.exr")
-        path_certainty = os.path.join(outputFolder, pair_string + "_certainty.exr")
+        path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
+        path_certainty = os.path.join(outputCertaintyFolder, pair_string + "_certainty.exr")
         save_image(path_warp, warp_A_B)
         save_image(path_certainty, certainty_A_B, True)
 
@@ -135,7 +137,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
-    parser.add_argument('--outputFolder', type=str, help='')
+    parser.add_argument('--outputWarpFolder', type=str, help='')
+    parser.add_argument('--outputCertaintyFolder', type=str, help='')
     parser.add_argument('--checkLoops', type=bool, help='')
     parser.add_argument('--rangeIteration', type=int, help='')
     parser.add_argument('--rangeBlocksCount', type=int, help='')
@@ -146,7 +149,8 @@ if __name__ == '__main__':
     if hasattr(args, 'func'): 
         args.func(inputSfMData=args.inputSfMData,
                     imagePairsList=args.imagePairsList,
-                    outputFolder=args.outputFolder,
+                    outputWarpFolder=args.outputWarpFolder,
+                    outputCertaintyFolder=args.outputCertaintyFolder,
                     checkLoops=args.checkLoops,
                     rangeIteration=args.rangeIteration,
                     rangeBlocksCount=args.rangeBlocksCount)

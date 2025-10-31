@@ -8,7 +8,9 @@ from meshroom.core import desc
 class RomaMatcher(desc.CommandLineNode):
 
     category = "ROMA"
-    documentation = """"""
+    documentation = """
+    Compute ROMA warp and certainty images on a list of images pairs.
+    """
     size = desc.DynamicNodeSize('inputSfMData')
     gpu = desc.Level.INTENSIVE
 
@@ -16,7 +18,7 @@ class RomaMatcher(desc.CommandLineNode):
     commandLineRange = "--rangeIteration {rangeIteration} --rangeBlocksCount {rangeBlocksCount}"
     
 
-    exePath = (Path(__file__).absolute().parent.parent.parent / "matcher.py").as_posix()
+    exePath = (Path(__file__).absolute().parent.parent.parent / "python" / "matcher.py").as_posix()
 
     commandLine="python "+exePath+" {allParams}"
 
@@ -43,8 +45,14 @@ class RomaMatcher(desc.CommandLineNode):
 
     outputs = [
         desc.File(
-            name="outputFolder",
-            label="Output folder",
+            name="outputWarpFolder",
+            label="Output Warp folder",
+            description="",
+            value="{nodeCacheFolder}"
+        ),
+        desc.File(
+            name="outputCertaintyFolder",
+            label="Output Certainty folder",
             description="",
             value="{nodeCacheFolder}"
         )

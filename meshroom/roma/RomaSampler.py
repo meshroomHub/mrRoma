@@ -8,11 +8,16 @@ from meshroom.core.utils import DESCRIBER_TYPES
 class RomaSampler(desc.CommandLineNode):
 
     category = "ROMA"
-    documentation = """"""
+    documentation = """
+    Sample the dense ROMA matches to generate features/matches used by SFM.
+    This is an intermediate node which has to be followed by RomaReducer.
+    """
     size = desc.DynamicNodeSize('inputSfMData')
-    gpu = desc.Level.INTENSIVE
+
+    parallelization = desc.Parallelization(blockSize=40)
+    commandLineRange = "--rangeIteration {rangeIteration} --rangeBlocksCount {rangeBlocksCount}"
     
-    exePath = (Path(__file__).absolute().parent.parent.parent / "sampler.py").as_posix()
+    exePath = (Path(__file__).absolute().parent.parent.parent / "python" / "sampler.py").as_posix()
     commandLine="python "+exePath+" {allParams}"
 
     inputs = [
@@ -35,18 +40,10 @@ class RomaSampler(desc.CommandLineNode):
             value=""
         ),
         desc.File(
-            name="masksFolder",
-            label="Masks folder",
+            name="certaintyFolder",
+            label="certainty folder",
             description="",
             value=""
-        ),
-        desc.ChoiceParam(
-            name="masksExtension",
-            label="Mask File Extension",
-            description="Mask file extension",
-            value="exr",
-            values=["exr", "png", "jpg"],
-            exclusive=True,
         ),
         desc.IntParam(
             name="maxMatches",
@@ -68,12 +65,6 @@ class RomaSampler(desc.CommandLineNode):
             description="Json files containing the estimated geometric filters",
             value=""
         ),
-        desc.BoolParam(
-            name="groupUncertainties",
-            label="Group uncertainties",
-            description="All Uncertainties from all pairs starting from the same view are mixed to enforce connections.",
-             value=False
-        ),
         desc.ChoiceParam(
             name="describerTypes",
             label="Describer Types",
@@ -88,15 +79,8 @@ class RomaSampler(desc.CommandLineNode):
 
     outputs = [
         desc.File(
-            name="featuresFolder",
-            label="Output Features folder",
-            description="",
-            value="{nodeCacheFolder}"
-        ),
-
-        desc.File(
-            name="matchesFolder",
-            label="Output Matches folder",
+            name="samplesFolder",
+            label="Output Samples folder",
             description="",
             value="{nodeCacheFolder}"
         )

@@ -7,7 +7,12 @@ import os
 class StarListing(desc.Node):
 
     category = "ROMA"
-    documentation = """"""
+    documentation = """ 
+    Generate an imagePair list to match later. For all keyframes, matches with the previous and next frames. 
+    The number of frames matched per keyframes depends on the 'radiusKeyFrames' property.
+    Assume the current keyframe is keyframe #N, all the frames between #N and #N+radiusKeyFrames will be matched.
+    Same for all the frames between #N and #N-radiusKeyFrames.
+    """
     size = desc.DynamicNodeSize("inputSfMData")
 
     inputs = [
@@ -83,14 +88,10 @@ class StarListing(desc.Node):
         for (key, view) in views.items():
             frames[view.getFrameId()] = key
         frames = dict(sorted(frames.items()))
-        
-        print(frames)
 
 
         dist = chunk.node.radiusKeyFrames.value
         framekeys = list(frames.keys())
-
-        print(framekeys)
 
         plist = avmic.PairSet()
         for curKeyFrameId in range(0, len(keyframes)):
@@ -98,9 +99,6 @@ class StarListing(desc.Node):
             lastKeyFrameId = min(curKeyFrameId + dist, len(keyframes))
 
             curFrameId = keyframes[curKeyFrameId]
-
-            print(firstKeyFrameId)
-            print(lastKeyFrameId)
             
             firstFrameId = framekeys[0]
             if firstKeyFrameId >= 0:
@@ -109,9 +107,6 @@ class StarListing(desc.Node):
             lastFrameId = framekeys[-1]
             if lastKeyFrameId < len(keyframes):
                 lastFrameId = keyframes[lastKeyFrameId]
-
-            print(firstFrameId)
-            print(lastFrameId)
 
             referenceViewId = frames[curFrameId]
             for otherFrameId in range(firstFrameId, lastFrameId + 1):

@@ -1,4 +1,12 @@
+from pyalicevision import matching as avmatch  
+from pyalicevision import feature as avfeat
 
+import scipy.ndimage
+
+from common import *
+
+import os
+import math
 
 def regionToNumpy(region):
 
@@ -14,58 +22,9 @@ def regionToNumpy(region):
 
     return array
 
-def interp(warp_A_B, certainty_A_B, coords, minCertainty):
-
-    warp_A_B = warp_A_B[:, :, :2]
-
-    index = np.arange(coords.shape[0])
-    index = index[:, np.newaxis]
-
-    #keep feature index after filtering
-    coords = np.hstack((coords, index))
-    coords = coords[coords[:, 0] >= 0.0]
-    coords = coords[coords[:, 1] >= 0.0]
-    coords = coords[coords[:, 0] < W - 2]
-    coords = coords[coords[:, 1] < H - 2]
-
-    X = coords[:, 0]
-    Y = coords[:, 1]
-
-    Xm = X.astype(int)
-    Xp = Xm + 1
-    Ym = Y.astype(int)
-    Yp = Ym + 1
-
-    w11 = warp_A_B[Ym, Xm]
-    w12 = warp_A_B[Ym, Xp]
-    w21 = warp_A_B[Yp, Xm]
-    w22 = warp_A_B[Yp, Xp]
-
-    certainty_A_B = certainty_A_B.squeeze()
-    c11 = certainty_A_B[Ym, Xm]
-    c12 = certainty_A_B[Ym, Xp]
-    c21 = certainty_A_B[Yp, Xm]
-    c22 = certainty_A_B[Yp, Xp]
-
-    cx = X - Xm
-    cy = Y - Ym
-    cx = cx[:, np.newaxis]
-    cy = cy[:, np.newaxis]
-
-    warp = cy * (cx * w11 + (1-cx) * w12) + (1.0 - cy) * (cx * w21 + (1-cx) * w22)
-    certainty = np.minimum(c11, np.minimum(c12, np.minimum(c21, c22)))
-
-    coords = coords[certainty < minCertainty]
-    warp = warp[certainty < minCertainty]
-    certainty = certainty[certainty < minCertainty]
-
-    coords[:, :2] = warp[:, :2]
-
-    return coords
-
-
 def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolder, matchesFolder, masksFolder, masksExtension, minCertainty, rangeIteration, rangeBlocksCount):
     
+     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
 
     plist = avmic.PairSet()
@@ -94,8 +53,8 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #load features
         regionsRef = avfeat.SiftRegions()
         regionsOther = avfeat.SiftRegions()
-        regionsRef.LoadFeatures(f"{featuresFolder}/{referenceId}.dspsift.feat")
-        regionsOther.LoadFeatures(f"{featuresFolder}/{otherId}.dspsift.feat")
+        regionsRef.Load(f"{featuresFolder}/{referenceId}.dspsift.feat", f"{featuresFolder}/{referenceId}.dspsift.desc")
+        regionsOther.Load(f"{featuresFolder}/{otherId}.dspsift.feat", f"{featuresFolder}/{otherId}.dspsift.desc")
 
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
@@ -103,7 +62,10 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         path_certainty = os.path.join(warpFolder, pair_string + "_certainty.exr")
         warp_A_B = open_image_as_numpy(path_warp)
         certainty_A_B = open_image_as_numpy(path_certainty, True)
-        
+
+        W = certainty_A_B.shape[1]
+        H = certainty_A_B.shape[0]
+
         #Load mask
         mask = None
         if len(masksFolder) > 0 :
@@ -129,26 +91,76 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         refCoords = regionToNumpy(regionsRef)
         refCoords[:, 0] *= float(W) / float(referenceInfo.width)
         refCoords[:, 1] *= float(H) / float(referenceInfo.height)
+        refCoordsInt = refCoords.astype(int)
 
-        interpolated = interp(warp_A_B, certainty_A_B, refCoords, minCertainty)
-        interpolated[:, 0] *= float(referenceInfo.width)
-        interpolated[:, 1] *= float(referenceInfo.height)
-
+        #retrieve a list of coordinates for other features
         otherCoords = regionToNumpy(regionsOther)
-        tree = scipy.spatial.KDTree(otherCoords)
-        (dd, ii) = tree.query(interpolated[:, :2], distance_upper_bound=20.0)
-        
-        interpolated = interpolated[ii < otherCoords.shape[0]]
-        ii = ii[ii < otherCoords.shape[0]]
+        otherCoords[:, 0] *= float(W) / float(otherInfo.width)
+        otherCoords[:, 1] *= float(H) / float(otherInfo.height)
+        otherCoordsInt = otherCoords.astype(int)
 
-        print(ii)
+        grid = [[[] for i in range(H)] for j in range(W)]
+        for row in range(otherCoords.shape[0]):
+            ix = otherCoordsInt[row, 0]
+            iy = otherCoordsInt[row, 1]
+            grid[iy][ix].append(row)
+
+        filtered_certainty = scipy.ndimage.minimum_filter(certainty_A_B, size=3, mode='constant', cval=np.inf)
+        minimum_warp = scipy.ndimage.minimum_filter(warp_A_B, size=3, mode='constant', cval=np.inf)
+        maximum_warp = scipy.ndimage.maximum_filter(warp_A_B, size=3, mode='constant', cval=-np.inf)
 
         matches = avmatch.IndMatches() 
-        for idx in range(0, ii.shape[0]):
-            i = int(interpolated[idx, 2])
-            j = int(ii[idx])
+
+        for row in range(refCoords.shape[0]):
+            ix = refCoordsInt[row, 0]
+            iy = refCoordsInt[row, 1]
+
+            if ix < 1 or iy < 1:
+                continue
             
-            matches.append(avmatch.IndMatch(i, j))
+            if ix >= (W - 1)  or iy >= (H - 1):
+                continue
+
+            if filtered_certainty[iy, ix] < minCertainty:
+                continue
+
+            #get region of search
+            minx = minimum_warp[iy, ix, 0] * W
+            miny = minimum_warp[iy, ix, 1] * H
+            maxx = maximum_warp[iy, ix, 0] * W
+            maxy = maximum_warp[iy, ix, 1] * H
+            iminx = int(np.floor(minx))
+            iminy = int(np.floor(miny))
+            imaxx = int(np.ceil(maxx))
+            imaxy = int(np.ceil(maxy))
+            
+            #extract features in region of search
+            subgrid = grid[iminy:imaxy][iminx:imaxx]
+            
+            firstId = -1
+            firstDist = 0
+            secondId = -1
+            secondDist = 0
+
+            subgrid = [x for l in subgrid for x in l]
+            subgrid = [x for l in subgrid for x in l]
+
+            for otherid in subgrid:
+                dist = regionsRef.SquaredDescriptorDistance(row, regionsOther, otherid)
+                if dist < firstDist or firstId < 0:
+                    firstDist = dist
+                    firstId = otherid
+                elif dist < secondDist or secondId < 0:
+                    secondDist = dist
+                    secondId = otherid
+            
+            if firstId < 0 or secondId < 0:
+                continue
+            
+            if secondDist * 0.8 < firstDist:
+                continue
+
+            matches.append(avmatch.IndMatch(row, firstId))
 
         perdesc = avmatch.MatchesPerDescType()
         perdesc[avmatch.EImageDescriberType_DSPSIFT] = matches
@@ -156,6 +168,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         pair = avmatch.Pair(referenceId, otherId)
         global_matches[pair] = perdesc
     
+    #Save all features and matches
     avmatch.Save(global_matches, matchesFolder, "txt", False, f"{rangeIteration}_")
 
 if __name__ == '__main__':
@@ -168,7 +181,7 @@ if __name__ == '__main__':
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--warpFolder', type=str, help='')
     parser.add_argument('--featuresFolder', type=str, help='')
-    parser.add_argument('--matchesFolder', type=str, help='')
+    parser.add_argument('--output', type=str, help='')
     parser.add_argument('--masksFolder', type=str, help='')
     parser.add_argument('--masksExtension', type=str, help='')
     parser.add_argument('--minCertainty', type=float, help='')
@@ -183,7 +196,7 @@ if __name__ == '__main__':
                 imagePairsList=args.imagePairsList,
                 warpFolder=args.warpFolder,
                 featuresFolder=args.featuresFolder,
-                matchesFolder=args.matchesFolder,
+                matchesFolder=args.output,
                 masksFolder=args.masksFolder,
                 masksExtension=args.masksExtension,
                 minCertainty=args.minCertainty,
