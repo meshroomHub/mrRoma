@@ -3,7 +3,7 @@ from romatch import roma_outdoor
 from common import *
 
 import os
-
+import torch
 
 
 def prepare_warp(w):
@@ -100,7 +100,17 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
     print(f"Processing elements {rangeStart} to {rangeEnd}")
 
     print("Loading model ....")
-    matcher = roma_outdoor(device="cuda", upsample_res=upsampleResolution)
+
+    dinov2_weights = None
+    romaOutdoorModel = None
+    if "ROMATCH_MODELS_PATH" in os.environ:
+        modelPath = os.environ["ROMATCH_MODELS_PATH"]
+        romaOutdoorModelPath = os.path.join(modelPath, "roma_outdoor.pth")
+        dinov2ModelPath = os.path.join(modelPath, "dinov2_vitl14_pretrain.pth")
+        dinov2_weights = torch.load(dinov2ModelPath, weights_only=True)
+        romaOutdoorModel = torch.load(romaOutdoorModelPath, weights_only=True)
+        
+    matcher = roma_outdoor(device="cuda", upsample_res=upsampleResolution, weights=romaOutdoorModel, dinov2_weights=dinov2_weights)
     
     for item in pairsToProcess:
         referenceId = item[0]
