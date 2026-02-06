@@ -367,7 +367,7 @@ if __name__ == '__main__':
     parser.add_argument('--certaintyFolder', type=str, help='')
     parser.add_argument('--samplesFolder', type=str, help='')
     parser.add_argument('--filtersFolder', type=str, help='')
-    parser.add_argument('--groupUncertainties', type=bool, help='')
+    parser.add_argument('--groupUncertainties', type=str_to_bool, help='', default=False)
     parser.add_argument('--maxMatches', type=int, help='')
     parser.add_argument('--minCertainty', type=float, help='')
     parser.add_argument('--rangeIteration', type=int, help='')

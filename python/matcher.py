@@ -149,7 +149,7 @@ if __name__ == '__main__':
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--outputWarpFolder', type=str, help='')
     parser.add_argument('--outputCertaintyFolder', type=str, help='')
-    parser.add_argument('--checkLoops', type=bool, help='')
+    parser.add_argument('--checkLoops', type=str_to_bool, help='', default=False)
     parser.add_argument('--rangeIteration', type=int, help='')
     parser.add_argument('--rangeBlocksCount', type=int, help='')
     parser.set_defaults(func=compute_densematches)
