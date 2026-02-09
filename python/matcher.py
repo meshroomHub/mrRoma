@@ -1,4 +1,6 @@
-from romatch import roma_outdoor
+from romav2.device import device
+from romav2 import RoMaV2
+from romav2.io import tensor_to_pil
 
 from common import *
 
@@ -8,32 +10,22 @@ import logging
 
 
 def prepare_warp(w):
-    """ Transform the warp tensor from roma to a RGB image with B value being always 1 """
-    w = ((w + 1.0) / 2.0).detach().cpu().numpy()
     
+    """ Transform the warp tensor from roma to a RGB image with B value being always 1 """
+    w = ((w + 1.0) / 2.0).detach().cpu().numpy().copy()
     w = np.concatenate([w, np.zeros([w.shape[0], w.shape[1], 1], dtype=np.float32)], axis=-1)
+    
+
     return w
 
 def prepare_confidence(c):
     """ Transform the confidence tensor from roma to a 3 dimensional array 
     (Last dimension being of size 1)
     """
-    c = c.detach().cpu().numpy()
-    c = np.expand_dims(c, axis=-1)
+    c = c.detach().cpu().numpy().copy()
+    
     return c
 
-def prepare_roma_outputs(w, c, upsampleResolution):
-    """ Transform output of roma to usable data
-    """
-    H = upsampleResolution[0]
-    W = upsampleResolution[1]
-
-    w_a_b = w[0, :, :W, 2:4]
-    c_a_b = c[0, :, :W]
-    w_b_a = w[0, :, W:, 0:2]
-    c_b_a = c[0, :, W:]
-    
-    return prepare_warp(w_a_b), prepare_warp(w_b_a), prepare_confidence(c_a_b), prepare_confidence(c_b_a)
 
 def checkUncertaintyLoops(warp_A_B, warp_B_A, certainty_A_B, certainty_B_A, upsampleResolution):
     """ Take the minimum of certainty between the original certainty, and the certainty of the warped pixel.
@@ -80,7 +72,6 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
         outputCertaintyFolder : a destination folder for the certainty images
     """
     
-    upsampleResolution = (864, 864)
 
     #Parse sfmdata, create compatible images
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
@@ -101,17 +92,10 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
     logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
 
     logging.info("Loading model ....")
+    model = RoMaV2()
+    model.apply_setting("precise")
+    upsampleResolution = (model.H_lr, model.W_lr) if (model.H_hr is None or model.W_hr is None) else (model.H_hr, model.W_hr) 
 
-    dinov2_weights = None
-    romaOutdoorModel = None
-    if "ROMATCH_MODELS_PATH" in os.environ:
-        modelPath = os.environ["ROMATCH_MODELS_PATH"]
-        romaOutdoorModelPath = os.path.join(modelPath, "roma_outdoor.pth")
-        dinov2ModelPath = os.path.join(modelPath, "dinov2_vitl14_pretrain.pth")
-        dinov2_weights = torch.load(dinov2ModelPath, weights_only=True)
-        romaOutdoorModel = torch.load(romaOutdoorModelPath, weights_only=True)
-        
-    matcher = roma_outdoor(device="cuda", upsample_res=upsampleResolution, weights=romaOutdoorModel, dinov2_weights=dinov2_weights)
     
     for item in pairsToProcess:
         referenceId = item[0]
@@ -125,11 +109,15 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
 
         imA = open_image_to_pil(referenceInfo.path)
         imB = open_image_to_pil(otherInfo.path)
-        torch_warp, torch_certainty = matcher.match(imA, imB, device="cuda")
-        
-        # prepare and stack data
-        warp_A_B, warp_B_A, certainty_A_B, certainty_B_A = prepare_roma_outputs(torch_warp, torch_certainty, upsampleResolution) 
 
+        preds = model.match(imA, imB)
+        warp_A_B = prepare_warp(preds["warp_AB"][0])
+        warp_B_A = prepare_warp(preds["warp_BA"][0])
+        certainty_A_B, certainty_B_A = (
+            prepare_confidence(preds["overlap_AB"][0]),
+            prepare_confidence(preds["overlap_BA"][0]),
+        )
+      
         if checkLoops:
             checkUncertaintyLoops(warp_A_B, warp_B_A, certainty_A_B, certainty_B_A, upsampleResolution)
 
@@ -137,7 +125,7 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
         path_certainty = os.path.join(outputCertaintyFolder, pair_string + "_certainty.exr")
-        save_image(path_warp, warp_A_B)
+        save_image(path_warp, warp_A_B, False)
         save_image(path_certainty, certainty_A_B, True)
 
 if __name__ == '__main__':
