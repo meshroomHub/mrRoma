@@ -1,15 +1,18 @@
 from pyalicevision import matchingImageCollection as avmic   
 from pyalicevision import matching as avmatch  
 from pyalicevision import feature as avfeat
+from pyalicevision import system as avsys
 
 from common import *
 
 import math
 import os
+import logging
+
 from pathlib import Path
 
 
-def apply_masks(inputSfMData, imagePairsList, warpFolder, certaintyFolder, masksFolder, masksExtension, outputCertaintyFolder):
+def apply_masks(inputSfMData, imagePairsList, warpFolder, certaintyFolder, masksFolder, masksExtension, outputCertaintyFolder, rangeIteration, rangeBlocksCount):
     
     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
@@ -19,8 +22,17 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, certaintyFolder, masks
     if not avmic.loadPairsFromFile(imagePairsList, plist, 0, -1, False):
         raise RuntimeError("Error in image pairs list loading")
 
+    
+    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(plist))
+    if not valid:
+        logging.error("Error computing range.")
+        raise RuntimeError("Error computing range.")
+    
+
     # loop over pairs of images
-    for item in plist:
+    for id in range(rangeStart, rangeEnd):
+
+        item = plist[id]
         
         #id of views
         referenceId = item[0]
@@ -34,6 +46,8 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, certaintyFolder, masks
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
         path_certainty = os.path.join(warpFolder, pair_string + "_certainty.exr")
+
+        logging.info(f"Processing pair {pair_string}")
         
         #load images
         warp_A_B = open_image_as_numpy(path_warp)
@@ -118,6 +132,8 @@ if __name__ == '__main__':
     parser.add_argument('--masksFolder', type=str, help='')
     parser.add_argument('--masksExtension', type=str, help='')
     parser.add_argument('--outputCertaintyFolder', type=str, help='')
+    parser.add_argument('--rangeIteration', type=int, help='')
+    parser.add_argument('--rangeBlocksCount', type=int, help='')
     parser.set_defaults(func=apply_masks)
 
     args = parser.parse_args()
@@ -129,6 +145,8 @@ if __name__ == '__main__':
                     certaintyFolder=args.certaintyFolder,
                     masksFolder=args.masksFolder,
                     masksExtension=args.masksExtension,
-                    outputCertaintyFolder=args.outputCertaintyFolder)
+                    outputCertaintyFolder=args.outputCertaintyFolder,
+                    rangeIteration=args.rangeIteration,
+                    rangeBlocksCount=args.rangeBlocksCount)
     else:
         parser.print_help()

@@ -2,6 +2,7 @@ from pyalicevision import matching as avmatch
 from pyalicevision import feature as avfeat
 
 import scipy.ndimage
+import logging
 
 from common import *
 
@@ -40,7 +41,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
 
     
     pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
-    print(f"Processing elements {rangeStart} to {rangeEnd}")
+    logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
         
     global_matches = avmatch.PairwiseMatches()
 

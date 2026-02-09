@@ -6,6 +6,7 @@ import math
 import re
 from pathlib import Path
 import json
+import logging
 
 def kde(x, std = 0.1):
     """
@@ -141,7 +142,7 @@ def build_uncertainties(iinfos, warpFolder, certaintyFolder, imagePairsList, fil
                 hasFilter = True
 
         if len(filters) > 0 and hasFilter is False:
-            print(f"filtered {referenceId} {otherId}")
+            logging.debug(f"filtered {referenceId} {otherId}")
             continue
         
         pair_string = str(referenceId) + "_" + str(otherId)
@@ -288,7 +289,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
         
         pairs = plistByRef[referenceId]
         
-        print(f"Processing reference #{referenceId}", flush=True)
+        logging.info(f"Processing reference #{referenceId}", flush=True)
 
         # Load uncertainties
         uncertaintiesByPair = build_uncertainties(iinfos, warpFolder, certaintyFolder, pairs, filters, minCertainty)

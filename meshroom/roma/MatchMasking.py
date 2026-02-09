@@ -13,6 +13,9 @@ class MatchMasking(desc.CommandLineNode):
     masks of the reference and matched images.
     """
     size = desc.DynamicNodeSize('inputSfMData')
+
+    parallelization = desc.Parallelization(blockSize=40)
+    commandLineRange = "--rangeIteration {rangeIteration} --rangeBlocksCount {rangeBlocksCount}"
     
     exePath = (Path(__file__).absolute().parent.parent.parent / "python" / "masker.py").as_posix()
     commandLine="python "+exePath+" {allParams}"
