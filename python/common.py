@@ -118,3 +118,11 @@ def get_imageinfos_from_sfmdata(inputSfMData):
         infos[key] = item
 
     return infos
+
+def str_to_bool(value):
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError(f"Boolean value expected, got '{value}'")

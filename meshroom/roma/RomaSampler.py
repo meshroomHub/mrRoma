@@ -65,6 +65,12 @@ class RomaSampler(desc.CommandLineNode):
             description="Json files containing the estimated geometric filters",
             value=""
         ),
+        desc.BoolParam(
+            name="groupUncertainties",
+            label="Group Uncertainties",
+            description="Group uncertainties per reference image.",
+            value=True
+        ),
         desc.ChoiceParam(
             name="describerTypes",
             label="Describer Types",

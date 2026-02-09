@@ -4,6 +4,7 @@ from pyalicevision import feature as avfeat
 
 from common import *
 
+import logging
 import os
 
 def export_features(regionsMap, idView, coords):
@@ -69,7 +70,7 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
     global_matches = avmatch.PairwiseMatches()
 
     for referenceId, pairs in plistByRef.items():
-        print(f"Processing reference #{referenceId}", flush=True)
+        logging.info(f"Processing reference #{referenceId}", flush=True)
 
         path_coords = os.path.join(samplesFolder, str(referenceId) + ".npy")
         

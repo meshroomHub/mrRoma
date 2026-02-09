@@ -4,6 +4,7 @@ from common import *
 
 import os
 import torch
+import logging
 
 
 def prepare_warp(w):
@@ -97,9 +98,9 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
 
     
     pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
-    print(f"Processing elements {rangeStart} to {rangeEnd}")
+    logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
 
-    print("Loading model ....")
+    logging.info("Loading model ....")
 
     dinov2_weights = None
     romaOutdoorModel = None
@@ -120,7 +121,7 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
 
         # Effectively do the matching
         # Output is (batch_size, 2, H, W)
-        print(f"Matching {referenceId} with {otherId}")
+        logging.info(f"Matching {referenceId} with {otherId}")
 
         imA = open_image_to_pil(referenceInfo.path)
         imB = open_image_to_pil(otherInfo.path)
@@ -132,7 +133,7 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
         if checkLoops:
             checkUncertaintyLoops(warp_A_B, warp_B_A, certainty_A_B, certainty_B_A, upsampleResolution)
 
-        print("saving matches")
+        logging.info("saving matches")
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
         path_certainty = os.path.join(outputCertaintyFolder, pair_string + "_certainty.exr")
@@ -149,7 +150,7 @@ if __name__ == '__main__':
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--outputWarpFolder', type=str, help='')
     parser.add_argument('--outputCertaintyFolder', type=str, help='')
-    parser.add_argument('--checkLoops', type=bool, help='')
+    parser.add_argument('--checkLoops', type=str_to_bool, help='', default=False)
     parser.add_argument('--rangeIteration', type=int, help='')
     parser.add_argument('--rangeBlocksCount', type=int, help='')
     parser.set_defaults(func=compute_densematches)
