@@ -2,8 +2,8 @@ __version__ = "1.0"
 
 import os 
 from pathlib import Path
-
 from meshroom.core import desc
+from pyalicevision import parallelization as avpar
 
 class RomaMatcher(desc.CommandLineNode):
 
@@ -11,7 +11,7 @@ class RomaMatcher(desc.CommandLineNode):
     documentation = """
     Compute ROMA warp and certainty images on a list of images pairs.
     """
-    size = desc.DynamicNodeSize('inputSfMData')
+    size = avpar.DynamicViewsSize('inputSfMData')
     gpu = desc.Level.INTENSIVE
 
     parallelization = desc.Parallelization(blockSize=40)

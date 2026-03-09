@@ -10,7 +10,6 @@ class RomaReducer(desc.CommandLineNode):
     category = "ROMA"
     documentation = """ RomaSampler is parallelized and distributed. It generated multiple
     output files which must merged together. """
-    size = desc.DynamicNodeSize('inputSfMData')
 
     exePath = (Path(__file__).absolute().parent.parent.parent / "python" / "reducer.py").as_posix()
     commandLine="python "+exePath+" {allParams}"

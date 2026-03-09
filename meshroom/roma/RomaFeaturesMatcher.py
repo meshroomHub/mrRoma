@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from meshroom.core import desc
+from pyalicevision import parallelization as avpar
 
 class RomaFeaturesMatcher(desc.CommandLineNode):
 
@@ -14,7 +15,7 @@ class RomaFeaturesMatcher(desc.CommandLineNode):
     A region will only be matched to features in the other image given the warp image coordinates.
     """
 
-    size = desc.DynamicNodeSize('inputSfMData')
+    size = avpar.DynamicViewsSize('inputSfMData')
     cpu = desc.Level.INTENSIVE
 
     parallelization = desc.Parallelization(blockSize=40)

@@ -13,7 +13,6 @@ class StarListing(desc.Node):
     Assume the current keyframe is keyframe #N, all the frames between #N and #N+radiusKeyFrames will be matched.
     Same for all the frames between #N and #N-radiusKeyFrames.
     """
-    size = desc.DynamicNodeSize("inputSfMData")
 
     inputs = [
         desc.File(
