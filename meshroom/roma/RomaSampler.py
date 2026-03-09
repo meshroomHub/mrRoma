@@ -81,7 +81,7 @@ class RomaSampler(desc.CommandLineNode):
             value=["sift"],
             exclusive=False,
             joinChar=",",
-            group="ingored"
+            commandLineGroup="ignored"
         ),
     ]
 
