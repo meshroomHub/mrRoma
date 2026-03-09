@@ -1,6 +1,7 @@
 from romav2.device import device
 from romav2 import RoMaV2
 from romav2.io import tensor_to_pil
+from romav2.features import Descriptor
 
 from common import *
 
@@ -92,7 +93,18 @@ def compute_densematches(inputSfMData, imagePairsList, outputWarpFolder, outputC
     logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
 
     logging.info("Loading model ....")
-    model = RoMaV2()
+
+    roma_weights = None
+    dinov3_path = None
+    if "ROMATCH_MODELS_PATH" in os.environ:
+        modelPath = os.environ["ROMATCH_MODELS_PATH"]
+        romaModelPath = os.path.join(modelPath, "romav2.pt")
+        roma_weights = torch.load(romaModelPath, weights_only=True)
+        dinov3_path = os.path.join(modelPath, "dinov3")
+
+    descCfg = Descriptor.Cfg(module_path=dinov3_path)
+    romaCfg = RoMaV2.Cfg(descriptor=descCfg, weights=roma_weights)
+    model = RoMaV2(cfg=romaCfg)
     model.apply_setting("precise")
     upsampleResolution = (model.H_lr, model.W_lr) if (model.H_hr is None or model.W_hr is None) else (model.H_hr, model.W_hr) 
 
