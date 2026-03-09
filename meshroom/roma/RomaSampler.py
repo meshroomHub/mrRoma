@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from meshroom.core import desc
 from meshroom.core.utils import DESCRIBER_TYPES
+from pyalicevision import parallelization as avpar
+
 
 class RomaSampler(desc.CommandLineNode):
 
@@ -12,7 +14,7 @@ class RomaSampler(desc.CommandLineNode):
     Sample the dense ROMA matches to generate features/matches used by SFM.
     This is an intermediate node which has to be followed by RomaReducer.
     """
-    size = desc.DynamicNodeSize('inputSfMData')
+    size = avpar.DynamicViewsSize('inputSfMData')
 
     parallelization = desc.Parallelization(blockSize=40)
     commandLineRange = "--rangeIteration {rangeIteration} --rangeBlocksCount {rangeBlocksCount}"
