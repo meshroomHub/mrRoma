@@ -23,7 +23,7 @@ def regionToNumpy(region):
 
     return array
 
-def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolder, matchesFolder, masksFolder, masksExtension, minCertainty, rangeIteration, rangeBlocksCount):
+def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolders, matchesFolder, masksFolder, masksExtension, minCertainty, rangeIteration, rangeBlocksCount):
     
      # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
@@ -54,8 +54,18 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #load features
         regionsRef = avfeat.SiftRegions()
         regionsOther = avfeat.SiftRegions()
-        regionsRef.Load(f"{featuresFolder}/{referenceId}.dspsift.feat", f"{featuresFolder}/{referenceId}.dspsift.desc")
-        regionsOther.Load(f"{featuresFolder}/{otherId}.dspsift.feat", f"{featuresFolder}/{otherId}.dspsift.desc")
+        for folder in featuresFolders:
+            ref_feat = f"{folder}/{referenceId}.dspsift.feat"
+            ref_desc = f"{folder}/{referenceId}.dspsift.desc"
+            if os.path.exists(ref_feat) and os.path.exists(ref_desc):
+                regionsRef.Load(ref_feat, ref_desc)
+                break
+        for folder in featuresFolders:
+            other_feat = f"{folder}/{otherId}.dspsift.feat"
+            other_desc = f"{folder}/{otherId}.dspsift.desc"
+            if os.path.exists(other_feat) and os.path.exists(other_desc):
+                regionsOther.Load(other_feat, other_desc)
+                break
 
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
@@ -181,7 +191,7 @@ if __name__ == '__main__':
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--warpFolder', type=str, help='')
-    parser.add_argument('--featuresFolder', type=str, help='')
+    parser.add_argument('--featuresFolders', type=str, nargs='+', help='')
     parser.add_argument('--output', type=str, help='')
     parser.add_argument('--masksFolder', type=str, help='')
     parser.add_argument('--masksExtension', type=str, help='')
@@ -196,7 +206,7 @@ if __name__ == '__main__':
         args.func(inputSfMData=args.inputSfMData,
                 imagePairsList=args.imagePairsList,
                 warpFolder=args.warpFolder,
-                featuresFolder=args.featuresFolder,
+                featuresFolders=args.featuresFolders,
                 matchesFolder=args.output,
                 masksFolder=args.masksFolder,
                 masksExtension=args.masksExtension,

@@ -33,11 +33,16 @@ class RomaFeaturesMatcher(desc.CommandLineNode):
             description="Input SfMData file.",
             value="",
         ),
-        desc.File(
-            name="featuresFolder",
-            label="Features folder",
-            description="Input features",
-            value=""
+        desc.ListAttribute(
+            elementDesc=desc.File(
+                name="featuresFolder",
+                label="Features Folder",
+                description="Folder containing input features.",
+                value="",
+            ),
+            name="featuresFolders",
+            label="Features Folders",
+            description="Input features folders.",
         ),
         desc.File(
             name="imagePairsList",
