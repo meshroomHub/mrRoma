@@ -188,8 +188,8 @@ if __name__ == '__main__':
     parser.add_argument('--masksFolder', type=str, help='')
     parser.add_argument('--masksExtension', type=str, help='')
     parser.add_argument('--minConfidence', type=float, help='')
-    parser.add_argument('--rangeIteration', type=int, help='')
-    parser.add_argument('--rangeBlocksCount', type=int, help='')
+    parser.add_argument('--rangeIteration', type=int, help='', default=0)
+    parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
     parser.set_defaults(func=compute_featuresMatcher)
 
     args = parser.parse_args()

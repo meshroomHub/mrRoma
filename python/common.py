@@ -60,6 +60,9 @@ def open_image_as_numpy(path, isBW = False, isFloat = True):
     isBW : should we load the image as a 1 channel, grayscale image
     isFloat : does it use float or unsigned char per channel ?
     """
+    if path is None:
+        return None
+        
     image = open_image(path, isBW, isFloat)
     return image.getNumpyArray()
 

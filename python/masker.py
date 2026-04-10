@@ -170,8 +170,8 @@ if __name__ == '__main__':
     parser.add_argument('--masksFolders', nargs='*', default=None, help='')
     parser.add_argument('--masksExtension', type=str, help='')
     parser.add_argument('--outputConfidenceFolder', type=str, help='')
-    parser.add_argument('--rangeIteration', type=int, help='')
-    parser.add_argument('--rangeBlocksCount', type=int, help='')
+    parser.add_argument('--rangeIteration', type=int, help='', default=0)
+    parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
     parser.set_defaults(func=apply_masks)
 
     args = parser.parse_args()
