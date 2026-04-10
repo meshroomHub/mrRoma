@@ -23,13 +23,13 @@ def regionToNumpy(region):
 
     return array
 
-def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolder, matchesFolder, masksFolder, masksExtension, minCertainty, rangeIteration, rangeBlocksCount):
+def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolder, matchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
     
      # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
 
     plist = avmic.PairSet()
-    if not avmic.loadPairsFromFile(imagePairsList, plist, 0, -1, False):
+    if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
     pairsToProcess = list(plist)
 
@@ -60,12 +60,12 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_certainty = os.path.join(warpFolder, pair_string + "_certainty.exr")
+        path_confidence = os.path.join(warpFolder, pair_string + "_confidence.exr")
         warp_A_B = open_image_as_numpy(path_warp)
-        certainty_A_B = open_image_as_numpy(path_certainty, True)
+        confidence_A_B = open_image_as_numpy(path_confidence, True)
 
-        W = certainty_A_B.shape[1]
-        H = certainty_A_B.shape[0]
+        W = confidence_A_B.shape[1]
+        H = confidence_A_B.shape[0]
 
         #Load mask
         mask = None
@@ -86,7 +86,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #Apply mask if exists
         if mask is not None:
             if mask.shape[0] == warp_A_B.shape[0] and mask.shape[1] == warp_A_B.shape[1]:
-                certainty_A_B[mask == 0] = 0
+                confidence_A_B[mask == 0] = 0
 
         #retrieve a list of coordinates for reference features
         refCoords = regionToNumpy(regionsRef)
@@ -106,7 +106,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
             iy = otherCoordsInt[row, 1]
             grid[iy][ix].append(row)
 
-        filtered_certainty = scipy.ndimage.minimum_filter(certainty_A_B, size=3, mode='constant', cval=np.inf)
+        filtered_confidence = scipy.ndimage.minimum_filter(confidence_A_B, size=3, mode='constant', cval=np.inf)
         minimum_warp = scipy.ndimage.minimum_filter(warp_A_B, size=3, mode='constant', cval=np.inf)
         maximum_warp = scipy.ndimage.maximum_filter(warp_A_B, size=3, mode='constant', cval=-np.inf)
 
@@ -122,7 +122,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
             if ix >= (W - 1)  or iy >= (H - 1):
                 continue
 
-            if filtered_certainty[iy, ix] < minCertainty:
+            if filtered_confidence[iy, ix] < minConfidence:
                 continue
 
             #get region of search
@@ -174,6 +174,8 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
 
 if __name__ == '__main__':
     import argparse
+
+    logging.basicConfig(format='[%(asctime)s][%(levelname)s] %(message)s', level=logging.INFO)
     
     # create the top-level parser
     parser = argparse.ArgumentParser(prog='romaProcessor')
@@ -185,7 +187,7 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=str, help='')
     parser.add_argument('--masksFolder', type=str, help='')
     parser.add_argument('--masksExtension', type=str, help='')
-    parser.add_argument('--minCertainty', type=float, help='')
+    parser.add_argument('--minConfidence', type=float, help='')
     parser.add_argument('--rangeIteration', type=int, help='')
     parser.add_argument('--rangeBlocksCount', type=int, help='')
     parser.set_defaults(func=compute_featuresMatcher)
@@ -200,7 +202,7 @@ if __name__ == '__main__':
                 matchesFolder=args.output,
                 masksFolder=args.masksFolder,
                 masksExtension=args.masksExtension,
-                minCertainty=args.minCertainty,
+                minConfidence=args.minConfidence,
                 rangeIteration=args.rangeIteration,
                 rangeBlocksCount=args.rangeBlocksCount)
     else:

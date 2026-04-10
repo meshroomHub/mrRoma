@@ -1,4 +1,4 @@
-__version__ = "1.0"
+__version__ = "1.1"
 
 import os 
 from pathlib import Path
@@ -66,9 +66,9 @@ class RomaFeaturesMatcher(desc.CommandLineNode):
             exclusive=True,
         ),
         desc.FloatParam(
-            name="minCertainty",
-            label="Minimal certainty",
-            description="Minimal certainty threshold.",
+            name="minConfidence",
+            label="Minimal confidence",
+            description="Minimal confidence threshold.",
             value=0.15,
             range=(0.0, 1.0, 0.01)
         )
