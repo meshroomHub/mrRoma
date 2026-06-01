@@ -67,21 +67,21 @@ def create_coordinates(width, height):
     # each 2d coordinates contains 2 elements, one for x, one for y
     return np.stack([X, Y], axis = 2)
 
-def updateUncertainty(grid, warp, certainty, model, threshold, reference_iinfo, other_iinfo):
-    """ Update certainty array using geometric filter. 
+def updateUncertainty(grid, warp, confidence, model, threshold, reference_iinfo, other_iinfo):
+    """ Update confidence array using geometric filter. 
     Assumes the filter has been computed externally.
 
     Parameters:
         grid : the coordinates grid (W,H,2)
         warp : the warped coordinates grid (W, H, 2)
-        certainty : per pixel confidence grid (W, H, 2)
+        confidence : per pixel confidence grid (W, H, 2)
         model : the 3x3 geometric matrix containing the fundamental matrix
         threshold : maximal distance allowed
         reference_iinfo : info about the first view
         other_iinfo : info about the second view
     """
-    width = certainty.shape[1]
-    height = certainty.shape[0]
+    width = confidence.shape[1]
+    height = confidence.shape[0]
 
     coords = grid.copy().reshape(-1, 2)
     coords = np.concatenate([coords, np.ones((coords.shape[0], 1))], axis = 1)
@@ -100,21 +100,21 @@ def updateUncertainty(grid, warp, certainty, model, threshold, reference_iinfo, 
     y = np.sum(matches.transpose() * x, axis=0)
     y = np.abs(y) / norm
     
-    #Certainty to 0 for pixels which do not pass geometric check
+    #Confidence to 0 for pixels which do not pass geometric check
     y = y.reshape((height, width))
-    certainty[y > (threshold)] = 0
+    confidence[y > (threshold)] = 0
 
-def build_uncertainties(iinfos, warpFolder, certaintyFolder, imagePairsList, filters, minCertainty):
+def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, filters, minConfidence):
 
     """ Build up and filter uncertainties 
 
     Parameters:
         iinfos : the image infos containing the descriptions of the images to match
         warpFolder : folder containing the warp images
-        certaintyFolder : folder containing the certainty images
+        confidenceFolder : folder containing the confidence images
         imagePairsList : a list of pair of images uids which list the warp to compute
         filters : filters used to geometrically filter the samples
-        minCertainty : minimal Certainty value
+        minConfidence : minimal Confidence value
 
     Return:
         dict of uncertainties indexed by pairs
@@ -147,52 +147,56 @@ def build_uncertainties(iinfos, warpFolder, certaintyFolder, imagePairsList, fil
         
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_certainty = os.path.join(certaintyFolder, pair_string + "_certainty.exr")
+        path_confidence = os.path.join(confidenceFolder, pair_string + "_confidence.exr")
+
+        if not Path(path_confidence).is_file():
+            continue
 
         #load images
         warp_A_B = open_image_as_numpy(path_warp)
-        certainty_A_B = open_image_as_numpy(path_certainty, True)
-        certainty_A_B[certainty_A_B < minCertainty] = 0.0
-        warpHeight = certainty_A_B.shape[0]
-        warpWidth = certainty_A_B.shape[1]
-        grid = create_coordinates(warpWidth, warpHeight)
+        confidence_A_B = open_image_as_numpy(path_confidence, True)
+        confidence_A_B[confidence_A_B < minConfidence] = 0.0
 
         #Filter images
         if hasFilter:
-            updateUncertainty(grid, warp_A_B, certainty_A_B, model, threshold, reference_iinfo, other_iinfo)
+            warpHeight = confidence_A_B.shape[0]
+            warpWidth = confidence_A_B.shape[1]
+            grid = create_coordinates(warpWidth, warpHeight)
+            updateUncertainty(grid, warp_A_B, confidence_A_B, model, threshold, reference_iinfo, other_iinfo)
         
-        uncertaintiesByPair[item] = certainty_A_B
+        uncertaintiesByPair[item] = confidence_A_B
     
     return uncertaintiesByPair
 
-def get_samples(certainty, minCertainty, maxMatches):
+
+def get_samples(confidence, minConfidence, maxMatches):
     """ Using uncertainty array, extract a list of samples
 
     Parameters:
-        certainty a 2d array containing the warp uncertainty
-        minCertainty minimal certainty allowed
+        confidence a 2d array containing the warp uncertainty
+        minConfidence minimal confidence allowed
         maxMatches maximal number of matches
     """
 
-    sample_thresh = minCertainty 
+    sample_thresh = minConfidence 
     
     #Create 2d grids
-    coords2d = create_coordinates(certainty.shape[1], certainty.shape[0])
+    coords2d = create_coordinates(confidence.shape[1], confidence.shape[0])
     
     #reshape to vector
-    certainty = certainty.squeeze()
+    confidence = confidence.squeeze()
     coords = coords2d.reshape(-1, 2)
-    certainty = certainty.reshape(-1)
+    confidence = confidence.reshape(-1)
 
     #remove bad elements
-    coords = coords[certainty > sample_thresh]
-    certainty = certainty[certainty > sample_thresh]
+    coords = coords[confidence > sample_thresh]
+    confidence = confidence[confidence > sample_thresh]
 
-    if certainty.shape[0] == 0:
+    if confidence.shape[0] == 0:
         return np.array(())
 
-    max_samples = min(maxMatches * 4, len(certainty))
-    probabilities = certainty / certainty.sum()
+    max_samples = min(maxMatches * 4, len(confidence))
+    probabilities = confidence / confidence.sum()
     
     samples = np.random.choice(len(probabilities), size = max_samples, p = probabilities, replace=False)
 
@@ -214,7 +218,80 @@ def get_samples(certainty, minCertainty, maxMatches):
     
     return final_coords
 
-def get_matches(coords, warp, certainty):
+
+def compute_warp_scale_windowed(warp, window_size=17, eps=1e-12):
+    """
+    Compute the local warp scale using an affine fit over a sliding window.
+
+    This is more robust than differentiating the warp over one pixel because the
+    warp is low resolution and can be aliased. For each pixel, an affine map is
+    fit from source coordinates to warped coordinates over a local window, and
+    the scale is derived from the determinant of its linear part.
+
+    Parameters:
+        warp : (H, W, 3) coordinate map, channels 0/1 are x/y in [0, 1]
+        window_size : odd side length of the sliding window in pixels
+        eps : numerical stability term
+
+    Return:
+        (H, W) array containing sqrt(|det(A)|), where A is the locally fitted
+        affine transform between source and warped coordinates.
+    """
+    if window_size < 3:
+        raise ValueError("window_size must be >= 3")
+
+    if window_size % 2 == 0:
+        window_size += 1
+
+    height = warp.shape[0]
+    width = warp.shape[1]
+
+    source = create_coordinates(width, height)
+    u = source[:, :, 0].astype(np.float64)
+    v = source[:, :, 1].astype(np.float64)
+    x = warp[:, :, 0].astype(np.float64)
+    y = warp[:, :, 1].astype(np.float64)
+
+    filt = scipy.ndimage.uniform_filter
+    size = window_size
+
+    mean_u = filt(u, size=size, mode='nearest')
+    mean_v = filt(v, size=size, mode='nearest')
+    mean_x = filt(x, size=size, mode='nearest')
+    mean_y = filt(y, size=size, mode='nearest')
+
+    mean_uu = filt(u * u, size=size, mode='nearest')
+    mean_uv = filt(u * v, size=size, mode='nearest')
+    mean_vv = filt(v * v, size=size, mode='nearest')
+
+    mean_xu = filt(x * u, size=size, mode='nearest')
+    mean_xv = filt(x * v, size=size, mode='nearest')
+    mean_yu = filt(y * u, size=size, mode='nearest')
+    mean_yv = filt(y * v, size=size, mode='nearest')
+
+    cov_uu = mean_uu - mean_u * mean_u
+    cov_uv = mean_uv - mean_u * mean_v
+    cov_vv = mean_vv - mean_v * mean_v
+
+    cov_xu = mean_xu - mean_x * mean_u
+    cov_xv = mean_xv - mean_x * mean_v
+    cov_yu = mean_yu - mean_y * mean_u
+    cov_yv = mean_yv - mean_y * mean_v
+
+    det_cov = cov_uu * cov_vv - cov_uv * cov_uv
+    det_cov = np.maximum(det_cov, eps)
+
+    a11 = (cov_xu * cov_vv - cov_xv * cov_uv) / det_cov
+    a12 = (cov_xv * cov_uu - cov_xu * cov_uv) / det_cov
+    a21 = (cov_yu * cov_vv - cov_yv * cov_uv) / det_cov
+    a22 = (cov_yv * cov_uu - cov_yu * cov_uv) / det_cov
+
+    det_a = a11 * a22 - a12 * a21
+
+    return np.sqrt(np.abs(det_a))
+
+
+def get_matches(coords, warp, confidence):
     """
     Using a list of coordinates, extract the associated coordinates using the warp image
     """
@@ -233,11 +310,11 @@ def get_matches(coords, warp, certainty):
 
         ret[i, 0] = warp[iy, ix, 0]
         ret[i, 1] = warp[iy, ix, 1]
-        ret[i, 2] = certainty[iy, ix, 0]
+        ret[i, 2] = confidence[iy, ix, 0]
     
     return ret
 
-def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, samplesFolder, filtersFolder, groupUncertainties, minCertainty, maxMatches, rangeIteration, rangeBlocksCount):
+def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, samplesFolder, filtersFolder, minConfidence, maxMatches, rangeIteration, rangeBlocksCount):
 
     """ This high level function is extracting samples form the warp images
 
@@ -245,16 +322,17 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
         inputSfmData : the sfmData containing the descriptions of the images to match
         imagePairsList : a list of pair of images uids which list the warp to compute
         warpFolder : folder containing the warp images
-        certaintyFolder : folder containing the certainty images
+        confidenceFolder : folder containing the confidence images
         samplesFolder : output folder for the samples files
         filtersFolder : folder containing the filters used to geometrically filter the samples
         masksFolder : folder containing the masks for input images
-        minCertainty: threshold for certainty validity
+        minConfidence: threshold for confidence validity
         maxMatches: Maximal amount of matches per pair
         rangeIteration: if of chunk to compute between [0; rangeBlocksCount[
         rangeBlocksCount: count of chunks blocks
     """
-
+    from pyalicevision import system as avsys
+    
     # First of all, load the optional filters
     filters = load_filters(filtersFolder)
 
@@ -263,7 +341,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
 
     # Retrieve list of images pairs to process
     plist = avmic.PairSet()
-    if not avmic.loadPairsFromFile(imagePairsList, plist, 0, -1, False):
+    if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
     
     # build a list of image pairs indexed by their reference images
@@ -276,27 +354,32 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
             plistByRef[ref] = [item]
     refsToProcess = list(plistByRef)
     
-    #Compute parallelization
-    blockSize = int(len(refsToProcess) / rangeBlocksCount)
-    rangeStart = rangeIteration * blockSize
-    rangeEnd = rangeStart + blockSize
-    if rangeIteration + 1 == rangeBlocksCount:
-        rangeEnd = len(refsToProcess)
+    # Parallelization is done by splitting pairs based on their reference image
+    # We want to have access to all the pairs from the same reference
+
+    # Computeing parallelization parameters
+    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(refsToProcess))
+    if not valid:
+        logging.error("Range is out of bounds.")
+        return
+        
     refsToProcess = refsToProcess[rangeStart:rangeEnd]
 
      #Loop over all reference images
     for referenceId in refsToProcess:
         
+        # Retrieve all pairs for this reference image
         pairs = plistByRef[referenceId]
         
-        logging.info(f"Processing reference #{referenceId}", flush=True)
+        logging.info(f"Processing reference #{referenceId}")
 
-        # Load uncertainties
-        uncertaintiesByPair = build_uncertainties(iinfos, warpFolder, certaintyFolder, pairs, filters, minCertainty)
+        # Load uncertainties and store them using pair as key
+        uncertaintiesByPair = build_uncertainties(iinfos, warpFolder, confidenceFolder, pairs, filters, minConfidence)
         if len(uncertaintiesByPair) == 0:
+            logging.info(f"No uncertainties for reference #{referenceId}")
             continue
 
-        #If groupUncertainties, we sum the certainties together for the same reference image
+        #we sum the certainties together for the same reference image
         #We also sample once for all pairs with the same reference image
         grouped = None
         for item in uncertaintiesByPair:
@@ -310,6 +393,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
         reference_iinfo = iinfos[referenceId]
         samples_A_B = get_samples(grouped, 0.0, maxMatches)
         if len(samples_A_B.shape) == 1:
+            logging.info(f"No valid samples for reference #{referenceId}")
             continue
 
         #Compute scale of the features
@@ -341,13 +425,13 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
 
             #load images
             warp_A_B = open_image_as_numpy(path_warp)
-            certainty_A_B = uncertaintiesByPair[item]
-            match_A_B = get_matches(samples_A_B, warp_A_B, certainty_A_B)
+            confidence_A_B = uncertaintiesByPair[item]
+            match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
 
             #scale to original size
             scaledSamples = np.zeros((match_A_B.shape[0], 4))
-            scaledSamples[:, 0] = match_A_B[:, 0] * reference_iinfo.width
-            scaledSamples[:, 1] = match_A_B[:, 1] * reference_iinfo.height
+            scaledSamples[:, 0] = match_A_B[:, 0] * other_iinfo.width
+            scaledSamples[:, 1] = match_A_B[:, 1] * other_iinfo.height
             scaledSamples[:, 2] = match_A_B[:, 2]
             scaledSamples[:, 3] = scale
 
@@ -358,6 +442,8 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, certaintyFolder, s
 if __name__ == '__main__':
     import argparse
 
+    logging.basicConfig(format='[%(asctime)s][%(levelname)s] %(message)s', level=logging.INFO)
+
     # create the top-level parser
     parser = argparse.ArgumentParser(prog='romaProcessor')
 
@@ -365,14 +451,13 @@ if __name__ == '__main__':
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--warpFolder', type=str, help='')
-    parser.add_argument('--certaintyFolder', type=str, help='')
+    parser.add_argument('--confidenceFolder', type=str, help='')
     parser.add_argument('--samplesFolder', type=str, help='')
     parser.add_argument('--filtersFolder', type=str, help='')
-    parser.add_argument('--groupUncertainties', type=str_to_bool, help='', default=False)
     parser.add_argument('--maxMatches', type=int, help='')
-    parser.add_argument('--minCertainty', type=float, help='')
-    parser.add_argument('--rangeIteration', type=int, help='')
-    parser.add_argument('--rangeBlocksCount', type=int, help='')
+    parser.add_argument('--minConfidence', type=float, help='')
+    parser.add_argument('--rangeIteration', type=int, help='', default=0)
+    parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
     parser.set_defaults(func=compute_samples)
 
     args = parser.parse_args()
@@ -381,11 +466,10 @@ if __name__ == '__main__':
         args.func(inputSfMData=args.inputSfMData,
                     imagePairsList=args.imagePairsList,
                     warpFolder=args.warpFolder,
-                    certaintyFolder=args.certaintyFolder,
+                    confidenceFolder=args.confidenceFolder,
                     samplesFolder=args.samplesFolder,
                     filtersFolder=args.filtersFolder,
-                    groupUncertainties=args.groupUncertainties,
-                    minCertainty=args.minCertainty,
+                    minConfidence=args.minConfidence,
                     maxMatches=args.maxMatches,
                     rangeIteration=args.rangeIteration,
                     rangeBlocksCount=args.rangeBlocksCount)

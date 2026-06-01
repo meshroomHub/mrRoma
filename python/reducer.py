@@ -15,7 +15,7 @@ def export_features(regionsMap, idView, coords):
     count = 0
     for coord in coords:
         if coord[2] > 1e-6:
-            regionsRef.Descriptors().append(avfeat.SiftDescriptor())
+            regionsRef.Descriptors().append(avfeat.RomaDescriptor())
             regionsRef.Features().append(avfeat.PointFeature(coord[0], coord[1], coord[3], 0.0))
             count = count + 1
            
@@ -28,8 +28,8 @@ def saveFeatures(regionsMap, outputFolder):
     
     for (key, region) in regionsMap.items():
         
-        ffeat = f"{outputFolder}/{key}.sift.feat"
-        fdesc = f"{outputFolder}/{key}.sift.desc"
+        ffeat = f"{outputFolder}/{key}.roma.feat"
+        fdesc = f"{outputFolder}/{key}.roma.desc"
         
         region.Save(ffeat, fdesc)
 
@@ -50,7 +50,7 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
 
     # Retrieve list of images pairs to process
     plist = avmic.PairSet()
-    if not avmic.loadPairsFromFile(imagePairsList, plist, 0, -1, False):
+    if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
     
     # build a list of image pairs indexed by their reference images
@@ -65,26 +65,44 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
     #Start features objects
     regionsMap = dict()
     for key, item in iinfos.items():
-        regionsMap[key] = avfeat.SiftRegions()
+        regionsMap[key] = avfeat.RomaRegions()
 
     global_matches = avmatch.PairwiseMatches()
 
     for referenceId, pairs in plistByRef.items():
-        logging.info(f"Processing reference #{referenceId}", flush=True)
+        logging.info(f"Processing reference #{referenceId}")
 
+        # Output features file for the reference image
         path_coords = os.path.join(samplesFolder, str(referenceId) + ".npy")
         
+        # Load file with coordinates for a given reference view
+        # This is an array of size [n, 3], where n is the number of coordinates used in this reference view
+        # first column is the x coordinate
+        # second column is the y coordinate
+        # third column is the 1
+        # fourth column is the scale
         try:
             coords_A_B = np.load(path_coords)
         except:
             coords_A_B = np.array(())
 
+        # Transform this array to a set of feature points for the reference view
+        # referenceId may already exists in regionMap, because the reference view may have been used as
+        # a matching view. We therefore return the offset in the list of features to be able to compute
+        # indices for matches
         refOffset = export_features(regionsMap, referenceId, coords_A_B)
 
+        # For all pairs with the current reference view
         for item in pairs:
 
             otherId = item[1]
 
+            # Load file with precomputed matches for a given reference view
+            # This is an array of size [n, 3], where n is the number of matches
+            # first column is the x coordinates in the other image
+            # second column is the y coordinates in the other image
+            # third column is the confidence score
+            # fourth column is the scale
             path_samples = os.path.join(samplesFolder, str(referenceId) + "_" + str(otherId) + ".npy")
 
             try:
@@ -92,8 +110,13 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
             except:
                 continue
 
+            # Transform this array to a set of feature points for the other view
+            # otherId may already exists in regionMap, because the view may have been used as
+            # another matching view. We therefore return the offset in the list of features to be able to compute
+            # indices for matches
             otherOffset = export_features(regionsMap, otherId, match_A_B)
             
+            # Build a list of matches using offset and indices
             pos = 0
             matches = avmatch.IndMatches() 
             for rowId in range(0, match_A_B.shape[0]):
@@ -101,9 +124,12 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
                     matches.append(avmatch.IndMatch(refOffset + rowId, otherOffset + pos))
                     pos = pos + 1
             
+            # Save matches for pair per desc.
+            # Obviously, here we only have on descriptor type
             perdesc = avmatch.MatchesPerDescType()
-            perdesc[avmatch.EImageDescriberType_SIFT] = matches
+            perdesc[avmatch.EImageDescriberType_ROMA] = matches
 
+            # Save matches for pair per desc in a global container
             pair = avmatch.Pair(referenceId, otherId)
             global_matches[pair] = perdesc
 
@@ -114,6 +140,8 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
 
 if __name__ == '__main__':
     import argparse
+
+    logging.basicConfig(format='[%(asctime)s][%(levelname)s] %(message)s', level=logging.INFO)
 
     # create the top-level parser
     parser = argparse.ArgumentParser(prog='romaProcessor')

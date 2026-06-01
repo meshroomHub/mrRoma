@@ -1,4 +1,4 @@
-__version__ = "1.0"
+__version__ = "1.1"
 
 import os 
 from pathlib import Path
@@ -42,8 +42,8 @@ class RomaSampler(desc.CommandLineNode):
             value=""
         ),
         desc.File(
-            name="certaintyFolder",
-            label="certainty folder",
+            name="confidenceFolder",
+            label="confidence folder",
             description="",
             value=""
         ),
@@ -55,9 +55,9 @@ class RomaSampler(desc.CommandLineNode):
             range=(0, 50000, 1000)
         ),
         desc.FloatParam(
-            name="minCertainty",
-            label="Minimal certainty",
-            description="Minimal certainty threshold.",
+            name="minConfidence",
+            label="Minimal confidence",
+            description="Minimal confidence threshold.",
             value=0.15,
             range=(0.0, 1.0, 0.01)
         ),
@@ -67,18 +67,12 @@ class RomaSampler(desc.CommandLineNode):
             description="Json files containing the estimated geometric filters",
             value=""
         ),
-        desc.BoolParam(
-            name="groupUncertainties",
-            label="Group Uncertainties",
-            description="Group uncertainties per reference image.",
-            value=True
-        ),
         desc.ChoiceParam(
             name="describerTypes",
             label="Describer Types",
             description="Describer types used to describe an image.",
             values=DESCRIBER_TYPES,
-            value=["sift"],
+            value=["roma"],
             exclusive=False,
             joinChar=",",
             commandLineGroup="ignored"

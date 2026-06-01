@@ -1,4 +1,4 @@
-__version__ = "1.0"
+__version__ = "1.1"
 
 import os 
 from pathlib import Path
@@ -38,7 +38,7 @@ class RomaReducer(desc.CommandLineNode):
             label="Describer Types",
             description="Describer types used to describe an image.",
             values=DESCRIBER_TYPES,
-            value=["sift"],
+            value=["roma"],
             exclusive=False,
             joinChar=",",
             commandLineGroup="ignored"
