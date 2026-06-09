@@ -1,0 +1,180 @@
+from pyalicevision import matching as avmatch  
+from pyalicevision import feature as avfeat
+from pyalicevision import system as avsys
+
+import logging
+
+from common import *
+
+import os
+import math
+
+def regionToNumpy(region):
+
+    size = len(region.Features())
+    array = np.empty(shape=(size, 2))
+
+    vec = region.Features()
+    for idx in range(0, size):
+
+        f = vec[idx]
+        array[idx, 0] = f.x()
+        array[idx, 1] = f.y()
+
+    return array
+
+def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, confidenceFolder, featuresFolder, matchesFolder, outputMatchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
+    
+    plist = avmic.PairSet()
+    if not avmic.loadPairsFromFile(imagePairsList, plist, False):
+        raise RuntimeError("Error in image pairs list loading")
+    pairsToProcess = list(plist)
+
+    #Compute parallelization parameters using the number of pairs to process
+    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(pairsToProcess))
+    if not valid:
+        logging.error("Range is out of bounds.")
+        return
+
+    pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
+
+    iinfos = get_imageinfos_from_sfmdata(inputSfMData)
+
+    input_matches = avmatch.PairwiseMatches()
+    output_matches = avmatch.PairwiseMatches()
+    types = avmatch.EImageDescriberTypeVector()
+    matches = avmatch.Load(input_matches, iinfos.keys(), [matchesFolder], types)
+    if not matches:
+        logging.error("Unable to load matches")
+        raise RuntimeError()
+    
+    for (pairViews, matchesPerDescs) in input_matches.items():
+
+        referenceId = pairViews[0]
+        otherId = pairViews[1]
+
+        if not pairViews in pairsToProcess:
+            continue
+
+        #load warp
+        pair_string = str(referenceId) + "_" + str(otherId)
+        path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
+        path_confidence = os.path.join(warpFolder, pair_string + "_confidence.exr")
+        warp_A_B = open_image_as_numpy(path_warp)
+        confidence_A_B = open_image_as_numpy(path_confidence, True)
+
+        #Load mask
+        mask = None
+        if len(masksFolder) > 0 :
+            # Replace the extension with the mask extension
+            stem = os.path.splitext(os.path.basename(referenceInfo.path))[0]
+            mask_filename = f"{stem}.{masksExtension}"
+
+            # Build the path to the correct mask
+            path_mask = os.path.join(masksFolder, mask_filename)
+
+            if os.path.exists(path_mask):
+                maskLarge = open_image(path_mask, isBW=True, isFloat=False)
+                maskSmall = avimage.Image_uchar()
+                avimage.resampleImage(W, H, maskLarge, maskSmall, False);
+                mask = maskSmall.getNumpyArray()
+
+        #Apply mask if exists
+        if mask is not None:
+            if mask.shape[0] == warp_A_B.shape[0] and mask.shape[1] == warp_A_B.shape[1]:
+                confidence_A_B[mask == 0] = 0
+
+        scaleY = warp_A_B.shape[0] / iinfos[referenceId].height
+        scaleX = warp_A_B.shape[1] / iinfos[referenceId].width
+
+        perdesc = avmatch.MatchesPerDescType()
+
+        for (desc, matchesPerDesc) in matchesPerDescs.items():
+
+            #load features
+            regionsRef = avfeat.SiftRegions()
+            regionsOther = avfeat.SiftRegions()
+            regionsRef.Load(f"{featuresFolder}/{referenceId}.{avfeat.EImageDescriberType_enumToString(desc)}.feat", f"{featuresFolder}/{referenceId}.{avfeat.EImageDescriberType_enumToString(desc)}.desc")
+            regionsOther.Load(f"{featuresFolder}/{otherId}.{avfeat.EImageDescriberType_enumToString(desc)}.feat", f"{featuresFolder}/{otherId}.{avfeat.EImageDescriberType_enumToString(desc)}.desc")
+            featuresRef = regionsRef.Features()
+            featuresOther = regionsOther.Features()
+
+            matches = avmatch.IndMatches() 
+
+            for item in matchesPerDesc:
+                pRef = featuresRef[item._i]
+                pOther = featuresOther[item._j]
+
+                ox = pOther.x() * scaleX
+                oy = pOther.y() * scaleY
+                rx = int(np.floor(pRef.x() * scaleX))
+                ry = int(np.floor(pRef.y() * scaleY))
+
+                minDist = 1e16
+                for i in (0, 1):
+                    for j in (0, 1):
+                        destx = warp_A_B[ry+i, rx+j, 0] * warp_A_B.shape[0]
+                        desty = warp_A_B[ry+i, rx+j, 1] * warp_A_B.shape[1]
+                        conf = confidence_A_B[ry+i, rx+j]
+                        if conf < minConfidence:
+                            continue
+
+                        dx = destx - ox
+                        dy = desty - oy
+                        dist = dx*dx + dy*dy
+                        if dist < minDist:
+                            minDist = dist
+
+                #print(minDist)
+                if np.sqrt(minDist) < 4:
+                    matches.append(item)
+            
+            logging.info(f"pair {referenceId}, {otherId} has {len(matches)} matches.")
+            perdesc[desc] = matches
+
+        output_matches[pairViews] = perdesc
+        
+    #Save all features and matches
+    avmatch.Save(output_matches, outputMatchesFolder, "txt", False, f"{rangeIteration}_")
+                
+        
+
+if __name__ == '__main__':
+    import argparse
+
+    logging.basicConfig(format='[%(asctime)s][%(levelname)s] %(message)s', level=logging.INFO)
+    
+    # create the top-level parser
+    parser = argparse.ArgumentParser(prog='romaProcessor')
+
+    parser.add_argument('--inputSfMData', type=str, help='')
+    parser.add_argument('--imagePairsList', type=str, help='')
+    parser.add_argument('--warpFolder', type=str, help='')
+    parser.add_argument('--confidenceFolder', type=str, help='')
+    parser.add_argument('--featuresFolder', type=str, help='')
+    parser.add_argument('--matchesFolder', type=str, help='')
+    parser.add_argument('--output', type=str, help='')
+    parser.add_argument('--masksFolder', type=str, help='')
+    parser.add_argument('--masksExtension', type=str, help='')
+    parser.add_argument('--minConfidence', type=float, help='')
+    parser.add_argument('--rangeIteration', type=int, help='', default=0)
+    parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
+    parser.set_defaults(func=compute_featuresMatcher)
+
+    args = parser.parse_args()
+
+    if hasattr(args, 'func'): 
+        args.func(inputSfMData=args.inputSfMData,
+                imagePairsList=args.imagePairsList,
+                warpFolder=args.warpFolder,
+                confidenceFolder=args.confidenceFolder,
+                featuresFolder=args.featuresFolder,
+                matchesFolder=args.matchesFolder,
+                outputMatchesFolder=args.output,
+                masksFolder=args.masksFolder,
+                masksExtension=args.masksExtension,
+                minConfidence=args.minConfidence,
+                rangeIteration=args.rangeIteration,
+                rangeBlocksCount=args.rangeBlocksCount)
+    else:
+        parser.print_help()
