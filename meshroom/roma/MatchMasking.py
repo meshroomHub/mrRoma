@@ -1,4 +1,4 @@
-__version__ = "1.2"
+__version__ = "1.3"
 
 import os 
 from pathlib import Path
@@ -55,7 +55,8 @@ class MatchMasking(desc.CommandLineNode):
                 label="Masks folder",
                 description="",
                 value=""
-            )
+            ),
+            exposed=True
         ),
         desc.ChoiceParam(
             name="masksExtension",
