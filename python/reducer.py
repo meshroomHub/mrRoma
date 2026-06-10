@@ -8,7 +8,26 @@ import logging
 import os
 
 def export_features(regionsMap, idView, coords):
+    """
+    Append feature points to the regions container for a given view.
 
+    For each coordinate whose confidence (third column) is greater than 1e-6,
+    a new ``RomaDescriptor`` and a corresponding ``PointFeature`` are added to
+    the region associated with ``idView``. Coordinates with zero or negligible
+    confidence are skipped so that the feature count stays consistent with the
+    match indices built later.
+
+    Args:
+        regionsMap (dict): Mapping from view ID to ``RomaRegions`` objects.
+            The region for ``idView`` is updated in-place.
+        idView (int): View identifier whose region should be updated.
+        coords (numpy.ndarray): Array of shape (N, 4) where columns are
+            ``[x, y, confidence, scale]`` in the original image resolution.
+
+    Returns:
+        int: Index of the first newly added feature, i.e. the feature count
+            before this call. Use this offset when building match indices.
+    """
     regionsRef = regionsMap[idView]
     start = regionsRef.RegionCount()
    
@@ -25,7 +44,18 @@ def export_features(regionsMap, idView, coords):
     return start
 
 def saveFeatures(regionsMap, outputFolder):
-    
+    """
+    Save all region feature and descriptor files to disk.
+
+    For each view in ``regionsMap`` the function writes two files inside
+    ``outputFolder``: ``<viewId>.roma.feat`` (feature positions/scales) and
+    ``<viewId>.roma.desc`` (descriptors).
+
+    Args:
+        regionsMap (dict): Mapping from view ID to ``RomaRegions`` objects.
+        outputFolder (str): Directory where the feature and descriptor files
+            are written.
+    """
     for (key, region) in regionsMap.items():
         
         ffeat = f"{outputFolder}/{key}.roma.feat"
@@ -34,17 +64,31 @@ def saveFeatures(regionsMap, outputFolder):
         region.Save(ffeat, fdesc)
 
 def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, matchesFolder):
-
-    """ This high level function is extracting samples form the warp images
-
-    Parameters:
-        inputSfmData : the sfmData containing the descriptions of the images to match
-        imagePairsList : a list of pair of images uids which list the warp to compute
-        samplesFolder : input folder for the samples files
-        featuresFolder : output folder for the features
-        matchesFolder : output folder for the matches
     """
+    Convert pre-computed sample files into AliceVision feature and match files.
+    RomaSampler was parallelized, RomaReducer do the post processing reduction.
 
+    For every reference image the function:
+    - loads its keypoint coordinates from ``<referenceId>.npy``,
+    - appends them as ``PointFeature`` / ``RomaDescriptor`` pairs to the global
+      regions map via :func:`export_features`,
+    - iterates over all associated pairs, loads their match arrays from
+      ``<referenceId>_<otherId>.npy``, adds the destination features, and builds
+      ``IndMatch`` index pairs,
+    - accumulates all matches in a global ``PairwiseMatches`` container.
+
+    After processing all references, the function saves matches (TXT format) via
+    ``avmatch.Save`` and features via :func:`saveFeatures`.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        samplesFolder (str): Directory containing the ``.npy`` sample files
+            produced by the sampler stage.
+        featuresFolder (str): Directory where ``.roma.feat`` / ``.roma.desc``
+            files are written.
+        matchesFolder (str): Directory where the match TXT files are written.
+    """
     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
 

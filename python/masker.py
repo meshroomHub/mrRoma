@@ -13,6 +13,19 @@ from pathlib import Path
 
 
 def parse_masks_folders(masksFolders):
+    """
+    Normalise the masks-folder argument into a deduplicated list of path strings.
+
+    Accepts ``None``, a single path string, or a (possibly nested) list/tuple of
+    path strings. Empty strings and whitespace-only entries are silently ignored.
+    Duplicate paths are removed while preserving order.
+
+    Args:
+        masksFolders: Path string, list/tuple of path strings, or ``None``.
+
+    Returns:
+        list[str]: Ordered, deduplicated list of non-empty folder paths.
+    """
     if masksFolders is None:
         return []
 
@@ -39,6 +52,17 @@ def parse_masks_folders(masksFolders):
 
 
 def find_mask_path(masksFolders, mask_filename):
+    """
+    Search a list of folders for a mask file and return the first match.
+
+    Args:
+        masksFolders (list[str]): Ordered list of directories to search.
+        mask_filename (str): Filename of the mask (e.g. ``"frame_0001.png"``).
+
+    Returns:
+        str | None: Full path to the first existing mask file, or ``None`` if
+            the file is not found in any of the provided folders.
+    """
     for folder in masksFolders:
         candidate = os.path.join(folder, mask_filename)
         if os.path.exists(candidate):
@@ -47,7 +71,32 @@ def find_mask_path(masksFolders, mask_filename):
 
 
 def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, masksFolders, masksExtension, outputConfidenceFolder, rangeIteration, rangeBlocksCount):
-    
+    """
+    Apply binary masks to dense confidence maps and write the results to disk.
+
+    For each image pair in the assigned processing range the function:
+    - loads the warp and confidence EXR files,
+    - looks up a mask for the reference image and, if found, zeros out confidence
+      at all reference pixels covered by the mask,
+    - looks up a mask for the other image and, if found, follows the warp to
+      determine which reference pixels map to masked regions in the other image
+      and zeros their confidence as well,
+    - skips the pair entirely if no reference mask is found,
+    - writes the filtered confidence map to ``outputConfidenceFolder``.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        warpFolder (str): Directory containing warp EXR files.
+        confidenceFolder (str): Directory containing input confidence EXR files.
+        masksFolders (str | list[str] | None): One or more directories to search
+            for mask images. Parsed by :func:`parse_masks_folders`.
+        masksExtension (str): File extension of the mask images (e.g. ``"png"``).
+        outputConfidenceFolder (str): Directory where filtered confidence EXR
+            files are written.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
 

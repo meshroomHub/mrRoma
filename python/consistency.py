@@ -7,6 +7,19 @@ import math
 import numpy as np
 
 def parse_folders(inputFolders):
+    """
+    Normalise the folder argument into a deduplicated list of path strings.
+
+    Accepts ``None``, a single path string, or a (possibly nested) list/tuple of
+    path strings. Empty strings and whitespace-only entries are silently ignored.
+    Duplicate paths are removed while preserving order.
+
+    Args:
+        inputFolders: Path string, list/tuple of path strings, or ``None``.
+
+    Returns:
+        list[str]: Ordered, deduplicated list of non-empty folder paths.
+    """
     if inputFolders is None:
         return []
 
@@ -33,6 +46,17 @@ def parse_folders(inputFolders):
 
 
 def find_path(folders, filename):
+    """
+    Search a list of folders for a file and return the first match.
+
+    Args:
+        folders (list[str]): Ordered list of directories to search.
+        filename (str): Filename to look for (e.g. ``"123_456_warp.exr"``).
+
+    Returns:
+        str | None: Full path to the first existing file, or ``None`` if the
+            file is not found in any of the provided folders.
+    """
     for folder in folders:
         candidate = os.path.join(folder, filename)
         if os.path.exists(candidate):
@@ -40,7 +64,25 @@ def find_path(folders, filename):
     return None
 
 def check_consistency(warp_A_B, warp_A_C, warp_B_C):
+    """
+    Compute the triplet-consistency error for three dense warps.
 
+    Given warps A→B, A→C, and B→C, the function checks whether the composition
+    B→C ∘ A→B agrees with A→C at every pixel. For each pixel in A it follows
+    A→B to a location in B, samples B→C at that location (using the four
+    nearest-neighbour corners), and measures the distance between the result
+    and the direct A→C prediction.
+
+    Args:
+        warp_A_B (numpy.ndarray | None): Dense warp from A to B, shape (H, W, 3)
+            with xy coordinates normalised to [0, 1] in the first two channels.
+        warp_A_C (numpy.ndarray | None): Dense warp from A to C, same layout.
+        warp_B_C (numpy.ndarray | None): Dense warp from B to C, same layout.
+
+    Returns:
+        numpy.ndarray | None: Per-pixel consistency error in pixels, shape
+            (H, W, 1), or ``None`` if any warp is ``None`` or the shapes differ.
+    """
     if warp_A_B is None or warp_A_C is None or warp_B_C is None:
         return None
 
@@ -97,7 +139,33 @@ def check_consistency(warp_A_B, warp_A_C, warp_B_C):
 
 
 def compute_consistency(referenceSfMData, framesSfMData, warpFolders, confidenceFolders, outputConfidenceFolder, maxDistance, rangeIteration, rangeBlocksCount):
-    
+    """
+    Filter confidence maps using triplet warp consistency across a frame sequence.
+
+    For each reference image in the assigned processing range and for each
+    consecutive frame pair (A, B) in the frame sequence, the function evaluates
+    the consistency of the composition warp(ref→A) ∘ warp(A→B) against
+    warp(ref→B) via :func:`check_consistency`. The per-pixel consistency errors
+    are accumulated by taking the element-wise minimum across all frame pairs,
+    and the confidence map for each ref→frame pair is zeroed out wherever the
+    accumulated error exceeds ``maxDistance``.
+
+    Filtered confidence maps are written to ``outputConfidenceFolder``.
+
+    Args:
+        referenceSfMData (str): Path to the SfM data file for the reference views.
+        framesSfMData (str): Path to the SfM data file for the frame sequence.
+        warpFolders (list[str] | str | None): One or more directories to search
+            for warp EXR files. Parsed by :func:`parse_folders`.
+        confidenceFolders (list[str] | str | None): One or more directories to
+            search for input confidence EXR files.
+        outputConfidenceFolder (str): Directory where filtered confidence EXR
+            files are written.
+        maxDistance (float): Maximum acceptable consistency error in pixels;
+            confidence is zeroed above this threshold.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
     from pyalicevision import system as avsys
 
     # Parse sfm

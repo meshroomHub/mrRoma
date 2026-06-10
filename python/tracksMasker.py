@@ -4,10 +4,30 @@ import logging
 import os
 
 def compute_masks(inputSfMData, outputDirectory, imagePairsList, existingTracks, radius, rangeIteration, rangeBlocksCount):
-    
+    """
+    Generate per-image binary masks highlighting regions covered by tracked features.
+
+    For each reference image in the processed range, the function locates all track
+    observations, dilates them by a disk of the given radius, inverts the result
+    (masked-out = tracked areas), and writes the mask as an EXR file named after
+    the source image stem.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        outputDirectory (str): Directory where output EXR mask files are written.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        existingTracks (str): Path to the existing tracks file. If empty, no tracks
+            are loaded and no masks are produced.
+        radius (int): Dilation radius (in pixels at 1280x1280 resolution) applied
+            around each tracked feature point.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
+
     from pyalicevision import system as avsys
     from pyalicevision import track as avtrack
     
+    # Todo : I need to find a way to guess it automatically.
     w = 1280
     h = 1280
 

@@ -11,6 +11,21 @@ import torch
 import torch.nn.functional as F
 
 def max_pool_confidence(confidence, radiusMP):
+    """
+    Apply non-maximum suppression to a confidence map using a square max-pool window.
+
+    Only pixels that are the strict local maximum within their pooling window are
+    retained; all others are set to 0. A small per-pixel tiebreaker is added before
+    pooling so that ties are broken deterministically.
+
+    Args:
+        confidence (numpy.ndarray): 2-D or single-channel (H, W, 1) confidence map.
+        radiusMP (int): Half-size of the pooling window. The full kernel is
+            ``(2*radiusMP+1) x (2*radiusMP+1)``. Values <= 0 return the input unchanged.
+
+    Returns:
+        numpy.ndarray: Confidence map with non-maxima zeroed out, same shape as input.
+    """
     if radiusMP <= 0:
         return confidence
 
@@ -38,7 +53,18 @@ def max_pool_confidence(confidence, radiusMP):
 
 def kde(x, std = 0.1):
     """
-    A reimplementation in numpy of Kde
+    Estimate the local density of a set of 2-D points using a Gaussian KDE.
+
+    For each point the density is computed as the sum of Gaussian kernel values
+    evaluated at its nearest neighbours (up to 200, within a radius derived from
+    the standard deviation). Points outside the effective radius contribute zero.
+
+    Args:
+        x (numpy.ndarray): Array of shape (N, 2) containing the point coordinates.
+        std (float): Standard deviation of the Gaussian kernel. Defaults to 0.1.
+
+    Returns:
+        numpy.ndarray: 1-D array of shape (N,) with the density estimate for each point.
     """
 
     #Using inverse of gaussian to compute upper bound for this stddev
@@ -59,10 +85,20 @@ def kde(x, std = 0.1):
 
 def load_filters(filtersFolder):
     """
-    Load json files containing filters
+    Load match-filter descriptors from JSON files in a folder.
 
-    Parameters:
-        filtersFolder is the path of the directory containing json files
+    Scans ``filtersFolder`` for files matching ``matches_<N>.json``, parses each
+    one, and concatenates all filter entries into a single list. If
+    ``filtersFolder`` is empty the function returns an empty list immediately.
+
+    Args:
+        filtersFolder (str): Path to the folder containing filter JSON files.
+            Pass an empty string to skip loading.
+
+    Returns:
+        list: All filter entries found across the JSON files. Each entry format
+            matches the structure stored in the files (pair identifier + model
+            parameters).
     """
     filters = []
 
@@ -84,7 +120,20 @@ def load_filters(filtersFolder):
     return filters
 
 def create_coordinates(width, height):
-     
+    """
+    Build a normalised (u, v) coordinate grid for an image of the given size.
+
+    Each pixel (col, row) maps to ``(col / width, row / height)`` so that
+    coordinates span ``[0, 1)`` in both dimensions.
+
+    Args:
+        width (int): Number of columns.
+        height (int): Number of rows.
+
+    Returns:
+        numpy.ndarray: Float64 array of shape (H, W, 2) where the last dimension
+            holds ``(u, v)`` normalised coordinates.
+    """
     # one array for the x coordinates, one array for the y coordinates
     xs = 1.0 / width
     ys = 1.0 / height
@@ -96,17 +145,26 @@ def create_coordinates(width, height):
     return np.stack([X, Y], axis = 2)
 
 def updateUncertainty(grid, warp, confidence, model, threshold, reference_iinfo, other_iinfo):
-    """ Update confidence array using geometric filter. 
-    Assumes the filter has been computed externally.
+    """
+    Zero out confidence values whose epipolar residual exceeds a threshold.
 
-    Parameters:
-        grid : the coordinates grid (W,H,2)
-        warp : the warped coordinates grid (W, H, 2)
-        confidence : per pixel confidence grid (W, H, 2)
-        model : the 3x3 geometric matrix containing the fundamental matrix
-        threshold : maximal distance allowed
-        reference_iinfo : info about the first view
-        other_iinfo : info about the second view
+    For each pixel the function computes the Sampson-like distance between the
+    reference coordinate and the epipolar line induced by ``model`` (a fundamental
+    or essential matrix), then sets the confidence to 0 wherever that distance
+    exceeds ``threshold``. Modifies ``confidence`` in-place.
+
+    Args:
+        grid (numpy.ndarray): Normalised coordinate grid for the reference image,
+            shape (H, W, 2), as returned by :func:`create_coordinates`.
+        warp (numpy.ndarray): Dense warp to the other image, shape (H, W, 3),
+            with xy coordinates in [0, 1] in the first two channels.
+        confidence (numpy.ndarray): Confidence map, shape (H, W, 1). Modified in-place.
+        model (numpy.ndarray): 3x3 fundamental/essential matrix.
+        threshold (float): Maximum acceptable epipolar distance (in pixels).
+        reference_iinfo: Image info for the reference view (must expose ``.width``
+            and ``.height``).
+        other_iinfo: Image info for the other view (must expose ``.width`` and
+            ``.height``).
     """
     width = confidence.shape[1]
     height = confidence.shape[0]
@@ -133,21 +191,30 @@ def updateUncertainty(grid, warp, confidence, model, threshold, reference_iinfo,
     confidence[y > (threshold)] = 0
 
 def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, filters, minConfidence):
-
-    """ Build up and filter uncertainties 
-
-    Parameters:
-        iinfos : the image infos containing the descriptions of the images to match
-        warpFolder : folder containing the warp images
-        confidenceFolder : folder containing the confidence images
-        imagePairsList : a list of pair of images uids which list the warp to compute
-        filters : filters used to geometrically filter the samples
-        minConfidence : minimal Confidence value
-
-    Return:
-        dict of uncertainties indexed by pairs
     """
-    
+    Load and optionally filter confidence maps for a list of image pairs.
+
+    For each pair the function:
+    - loads the pre-computed confidence EXR,
+    - discards values below ``minConfidence``,
+    - if a matching filter exists, applies epipolar-geometry filtering via
+      :func:`updateUncertainty`,
+    - skips pairs whose confidence file is missing or that have no filter entry
+      when filters are provided.
+
+    Args:
+        iinfos (dict): Mapping from view ID to image-info objects.
+        warpFolder (str): Directory containing warp EXR files.
+        confidenceFolder (str): Directory containing confidence EXR files.
+        imagePairsList (list): List of (referenceId, otherId) tuples to process.
+        filters (list): Filter entries as returned by :func:`load_filters`.
+            Pass an empty list to skip geometric filtering.
+        minConfidence (float): Confidence values below this are set to 0.
+
+    Returns:
+        dict: Mapping from ``(referenceId, otherId)`` tuples to their filtered
+            confidence arrays (shape H x W x 1).
+    """
     uncertaintiesByPair = dict()
 
     # loop over pairs of images
@@ -170,6 +237,7 @@ def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, fi
                 hasFilter = True
 
         if len(filters) > 0 and hasFilter is False:
+            #If a filter is not found : no matches
             logging.debug(f"filtered {referenceId} {otherId}")
             continue
         
@@ -198,15 +266,25 @@ def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, fi
 
 
 def get_samples(confidence, minConfidence, maxMatches, radiusMP):
-    """ Using uncertainty array, extract a list of samples
-
-    Parameters:
-        confidence a 2d array containing the warp uncertainty
-        minConfidence minimal confidence allowed
-        maxMatches maximal number of matches
-        radiusMP parameter of max pooling
     """
+    Sample a spatially balanced set of high-confidence pixel coordinates.
 
+    The function performs two-stage sampling:
+    1. Non-maximum suppression via :func:`max_pool_confidence` followed by
+       confidence-weighted random sampling to obtain an initial candidate set.
+    2. Density-penalised re-sampling via :func:`kde` to promote spatial spread,
+       discarding isolated points with very low local density.
+
+    Args:
+        confidence (numpy.ndarray): Confidence map, shape (H, W) or (H, W, 1).
+        minConfidence (float): Minimum confidence threshold; pixels below are excluded.
+        maxMatches (int): Maximum number of samples to return.
+        radiusMP (int): Radius passed to :func:`max_pool_confidence` for NMS.
+
+    Returns:
+        numpy.ndarray: Array of shape (N, 2) with normalised (u, v) coordinates
+            of the selected samples, where N <= ``maxMatches``.
+    """
     sample_thresh = minConfidence 
     pooledConfidence = max_pool_confidence(confidence, radiusMP)
 
@@ -251,21 +329,23 @@ def get_samples(confidence, minConfidence, maxMatches, radiusMP):
 
 def compute_warp_scale_windowed(warp, window_size=17, eps=1e-12):
     """
-    Compute the local warp scale using an affine fit over a sliding window.
+    Estimate the local scale change induced by a dense warp using a sliding window.
 
-    This is more robust than differentiating the warp over one pixel because the
-    warp is low resolution and can be aliased. For each pixel, an affine map is
-    fit from source coordinates to warped coordinates over a local window, and
-    the scale is derived from the determinant of its linear part.
+    For each pixel, a local affine transform is fitted to the warp within a square
+    neighbourhood via windowed covariance statistics. The returned scale is the
+    square root of the absolute determinant of the 2x2 affine matrix, which
+    approximates the local area-stretch factor.
 
-    Parameters:
-        warp : (H, W, 3) coordinate map, channels 0/1 are x/y in [0, 1]
-        window_size : odd side length of the sliding window in pixels
-        eps : numerical stability term
+    Args:
+        warp (numpy.ndarray): Dense warp array of shape (H, W, >=2) with normalised
+            [0, 1] coordinates in the first two channels.
+        window_size (int): Side length of the averaging window. Must be >= 3;
+            even values are incremented by 1. Defaults to 17.
+        eps (float): Small value added to the covariance determinant to avoid
+            division by zero. Defaults to 1e-12.
 
-    Return:
-        (H, W) array containing sqrt(|det(A)|), where A is the locally fitted
-        affine transform between source and warped coordinates.
+    Returns:
+        numpy.ndarray: Float64 array of shape (H, W) with the per-pixel scale estimate.
     """
     if window_size < 3:
         raise ValueError("window_size must be >= 3")
@@ -323,7 +403,20 @@ def compute_warp_scale_windowed(warp, window_size=17, eps=1e-12):
 
 def get_matches(coords, warp, confidence):
     """
-    Using a list of coordinates, extract the associated coordinates using the warp image
+    Look up warp destinations and confidence values for a set of source coordinates.
+
+    For each normalised (u, v) coordinate the function reads the corresponding
+    pixel from ``warp`` and ``confidence`` by nearest-neighbour sampling.
+
+    Args:
+        coords (numpy.ndarray): Array of shape (N, 2) with normalised [0, 1]
+            source coordinates (u along width, v along height).
+        warp (numpy.ndarray): Dense warp array of shape (H, W, >=2).
+        confidence (numpy.ndarray): Confidence map of shape (H, W, 1).
+
+    Returns:
+        numpy.ndarray: Array of shape (N, 3) where columns are
+            ``[warp_u, warp_v, confidence]`` for each input coordinate.
     """
     height = warp.shape[0]
     width = warp.shape[1]
@@ -345,21 +438,33 @@ def get_matches(coords, warp, confidence):
     return ret
 
 def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, samplesFolder, filtersFolder, minConfidence, maxMatches, radiusMP, rangeIteration, rangeBlocksCount):
+    """
+    Extract and save feature samples and their matches from dense warp fields.
 
-    """ This high level function is extracting samples form the warp images
+    For each reference image in the assigned processing range the function:
+    - aggregates confidence maps across all its associated pairs,
+    - draws a spatially balanced sample of up to ``maxMatches`` feature locations,
+    - scales the normalised coordinates back to the original image resolution,
+    - looks up warp destinations in each pair and scales them similarly,
+    - saves a ``.npy`` file per reference image (keypoint positions + scale) and
+      per pair (match positions + confidence + scale).
 
-    Parameters:
-        inputSfmData : the sfmData containing the descriptions of the images to match
-        imagePairsList : a list of pair of images uids which list the warp to compute
-        warpFolder : folder containing the warp images
-        confidenceFolder : folder containing the confidence images
-        samplesFolder : output folder for the samples files
-        filtersFolder : folder containing the filters used to geometrically filter the samples
-        masksFolder : folder containing the masks for input images
-        minConfidence: threshold for confidence validity
-        maxMatches: Maximal amount of matches per pair
-        rangeIteration: if of chunk to compute between [0; rangeBlocksCount[
-        rangeBlocksCount: count of chunks blocks
+    Output files are named ``<referenceId>.npy`` and
+    ``<referenceId>_<otherId>.npy`` inside ``samplesFolder``.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        warpFolder (str): Directory containing warp EXR files.
+        confidenceFolder (str): Directory containing confidence EXR files.
+        samplesFolder (str): Directory where output ``.npy`` sample files are written.
+        filtersFolder (str): Directory with optional geometric filter JSON files
+            (pass an empty string to disable filtering).
+        minConfidence (float): Minimum confidence threshold for sample selection.
+        maxMatches (int): Maximum number of feature matches to extract per reference.
+        radiusMP (int): Non-maximum suppression radius used during sampling.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
     """
     from pyalicevision import system as avsys
     

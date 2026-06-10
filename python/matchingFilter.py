@@ -10,7 +10,16 @@ import os
 import math
 
 def regionToNumpy(region):
+    """
+    Convert the feature positions of a region to a NumPy array.
 
+    Args:
+        region: An AliceVision region object exposing a ``Features()`` method
+            that returns a sequence of objects with ``.x()`` and ``.y()`` accessors.
+
+    Returns:
+        numpy.ndarray: Float64 array of shape (N, 2) where each row is ``[x, y]``.
+    """
     size = len(region.Features())
     array = np.empty(shape=(size, 2))
 
@@ -24,7 +33,35 @@ def regionToNumpy(region):
     return array
 
 def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, confidenceFolder, featuresFolder, matchesFolder, outputMatchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
-    
+    """
+    Filter existing feature matches using dense warp consistency.
+
+    For each pair in the assigned processing range the function:
+    - loads the pre-computed dense warp and confidence map,
+    - optionally applies a binary mask to zero out confidence in masked regions,
+    - for every existing match, samples the warp at the reference keypoint location
+      and checks whether the predicted destination is within 4 pixels of the
+      actual matched keypoint in the other image (using bilinear corner sampling),
+    - retains only matches that pass both the confidence and distance checks.
+
+    Filtered matches are saved to ``outputMatchesFolder`` as TXT files prefixed
+    with the range iteration index.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        warpFolder (str): Directory containing warp EXR files.
+        confidenceFolder (str): Directory containing confidence EXR files.
+        featuresFolder (str): Directory containing feature ``.feat`` / ``.desc`` files.
+        matchesFolder (str): Directory with the input match files to filter.
+        outputMatchesFolder (str): Directory where filtered match files are written.
+        masksFolder (str): Directory containing optional binary mask images.
+            Pass an empty string to disable masking.
+        masksExtension (str): File extension of the mask images (e.g. ``"png"``).
+        minConfidence (float): Minimum warp confidence required to validate a match.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")

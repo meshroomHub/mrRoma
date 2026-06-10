@@ -10,7 +10,16 @@ import os
 import math
 
 def regionToNumpy(region):
+    """
+    Convert the feature positions of a region to a NumPy array.
 
+    Args:
+        region: An AliceVision region object exposing a ``Features()`` method
+            that returns a sequence of objects with ``.x()`` and ``.y()`` accessors.
+
+    Returns:
+        numpy.ndarray: Float64 array of shape (N, 2) where each row is ``[x, y]``.
+    """
     size = len(region.Features())
     array = np.empty(shape=(size, 2))
 
@@ -24,7 +33,36 @@ def regionToNumpy(region):
     return array
 
 def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFolder, matchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
-    
+    """
+    Match DSPSIFT features guided by a dense warp field.
+
+    For each image pair in the assigned processing range the function:
+    - loads DSPSIFT features for both images,
+    - loads the dense warp and confidence EXR files,
+    - optionally applies a binary reference mask to zero out confidence,
+    - for every reference keypoint with sufficient confidence, restricts the
+      search for matching other-image features to the warp-predicted region
+      (using a spatial grid indexed on the other image),
+    - selects the nearest-descriptor neighbour and applies a ratio test
+      (second-best distance must be > 0.8 × best distance),
+    - accumulates accepted matches into a global ``PairwiseMatches`` container
+      and saves them as TXT files prefixed with the range iteration index.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        warpFolder (str): Directory containing warp EXR files.
+        featuresFolder (str): Directory containing ``.dspsift.feat`` / ``.dspsift.desc``
+            feature files.
+        matchesFolder (str): Directory where output match TXT files are written.
+        masksFolder (str): Directory containing optional binary mask images.
+            Pass an empty string to disable masking.
+        masksExtension (str): File extension of the mask images (e.g. ``"png"``).
+        minConfidence (float): Minimum warp confidence required to consider a
+            reference keypoint for matching.
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
      # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
 

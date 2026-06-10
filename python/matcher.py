@@ -11,11 +11,19 @@ import logging
 
 
 def prepare_warp(w):
-    
-    """ 
-    Transform the warp tensor from roma to a RGB image with B value being always 0.
-    First step : w contains values between -1 and 1.0. Updates it to be between 0 and 1.
-    Second step : converts a 2 channel image to a 3 channel image, filling the last channel with 0 
+    """
+    Convert a RoMa warp tensor to a NumPy array with normalized [0, 1] coordinates.
+
+    The input tensor uses [-1, 1] coordinates (RoMa convention). This function
+    rescales them to [0, 1] and appends a zero channel to produce a 3-channel
+    array suitable for saving as an EXR image.
+
+    Args:
+        w (torch.Tensor): Warp tensor of shape (H, W, 2) with values in [-1, 1].
+
+    Returns:
+        numpy.ndarray: Float32 array of shape (H, W, 3) with xy coordinates in
+            [0, 1] and a zero third channel.
     """
     w = ((w + 1.0) / 2.0).detach().cpu().numpy().copy()
     w = np.concatenate([w, np.zeros([w.shape[0], w.shape[1], 1], dtype=np.float32)], axis=-1)
@@ -23,28 +31,37 @@ def prepare_warp(w):
     return w
 
 def prepare_confidence(c):
-    
-    """ 
-    Transform the confidence tensor from roma to a 3 dimensional array 
-    (Last dimension being of size 1)
+    """
+    Convert a RoMa confidence tensor to a NumPy array.
+
+    Args:
+        c (torch.Tensor): Confidence tensor of arbitrary shape.
+
+    Returns:
+        numpy.ndarray: Detached, CPU-side copy of the tensor as a NumPy array.
     """
     c = c.detach().cpu().numpy().copy()
     
     return c
 
 def check_loop(warp_A_B, warp_B_A):
-    """Check the loop consistency of a warp pair.
+    """
+    Compute the round-trip (loop-closure) error for a pair of dense warps.
 
-    For each pixel in A, follow warp_A_B to B, then warp_B_A back to A.
-    Returns the round-trip distance (in pixels) from the original position.
+    For every pixel in image A, the forward warp maps it to a location in B.
+    The function then samples the backward warp at that location and measures
+    how far the result deviates from the original pixel position. Bilinear
+    sampling is approximated by taking the minimum distance among the four
+    nearest-neighbor corners.
 
-    Parameters:
-        warp_A_B: warp image from A to B, values in [0, 1] (shape H x W x 2)
-        warp_B_A: warp image from B to A, values in [0, 1] (shape H x W x 2)
+    Args:
+        warp_A_B (numpy.ndarray | None): Dense warp from A to B, shape (H, W, 3),
+            with xy coordinates normalised to [0, 1] in the first two channels.
+        warp_B_A (numpy.ndarray | None): Dense warp from B to A, same layout.
 
     Returns:
-        Distance map of shape (H, W, 1), or None if inputs are invalid.
-        Pixels whose forward coordinate falls outside the image are set to inf.
+        numpy.ndarray | None: Per-pixel round-trip error in pixels, shape
+            (H, W, 1), or None if either warp is None or the shapes differ.
     """
     if warp_A_B is None or warp_B_A is None:
         return None
@@ -91,20 +108,21 @@ def check_loop(warp_A_B, warp_B_A):
     return dist[..., np.newaxis]
 
 def updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, threshold):
-    """Zero out confidence where the A→B→A loop error exceeds the threshold.
+    """
+    Zero out confidence values where the round-trip warp error exceeds a threshold.
 
-    For each pixel in A the round-trip error is computed: the pixel is mapped
-    to B via warp_A_B, then mapped back to A via warp_B_A.  If the Euclidean
-    distance between the recovered position and the original pixel exceeds
-    *threshold* (in pixels), both confidence_A_B and confidence_B_A are set to
-    zero at that location.
+    Calls :func:`check_loop` to obtain per-pixel loop errors and sets both
+    ``confidence_A_B`` and ``confidence_B_A`` to 0 at all pixels whose error
+    is greater than ``threshold``. Modifies the confidence arrays in-place.
 
-    Parameters:
-        warp_A_B      warp image from A to B, values in [0, 1]
-        warp_B_A      warp image from B to A, values in [0, 1]
-        confidence_A_B  confidence map for warp_A_B (modified in-place)
-        confidence_B_A  confidence map for warp_B_A (modified in-place)
-        threshold     maximum accepted round-trip distance in pixels
+    Args:
+        warp_A_B (numpy.ndarray): Dense warp from A to B, shape (H, W, 3).
+        warp_B_A (numpy.ndarray): Dense warp from B to A, shape (H, W, 3).
+        confidence_A_B (numpy.ndarray): Confidence map for A→B, shape (H, W, 1).
+            Modified in-place.
+        confidence_B_A (numpy.ndarray): Confidence map for B→A, shape (H, W, 1).
+            Modified in-place.
+        threshold (float): Maximum acceptable round-trip error in pixels.
     """
     dist = check_loop(warp_A_B, warp_B_A)
     if dist is None:
@@ -115,7 +133,35 @@ def updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_
     confidence_B_A[invalid] = 0.0
 
 def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarpFolder, outputConfidenceFolder, outputCovarianceFolder, checkLoops, loopThreshold, outputCovarianceFlag, rangeIteration, rangeBlocksCount):
- 
+    """
+    Run RoMa dense matching on a set of image pairs and save the results to disk.
+
+    For each pair in the assigned processing range the function:
+    - loads both images,
+    - runs the RoMa model to obtain bidirectional dense warps and overlap maps,
+    - optionally filters matches using loop-closure consistency,
+    - filters matches below ``minConfidence``,
+    - writes the warp, confidence, and (optionally) covariance EXR files.
+
+    Output filenames follow the pattern ``<referenceId>_<otherId>_{warp,confidence,covariance}.exr``.
+
+    Args:
+        inputSfMData (str): Path to the input SfM data file.
+        imagePairsList (str): Path to the file listing image pairs to process.
+        minConfidence (float): Minimum confidence threshold; matches below this
+            value are discarded (warp and confidence set to 0).
+        outputWarpFolder (str): Directory for output warp EXR files.
+        outputConfidenceFolder (str): Directory for output confidence EXR files.
+        outputCovarianceFolder (str): Directory for output covariance EXR files.
+        checkLoops (bool): If True, apply loop-closure filtering via
+            :func:`updateUncertaintyWithLoops`.
+        loopThreshold (float): Maximum round-trip error in pixels used for
+            loop-closure filtering.
+        outputCovarianceFlag (bool): If True, compute and save per-pixel
+            uncertainty (std-dev derived from precision matrix determinant).
+        rangeIteration (int): Index of the current processing block (for parallelization).
+        rangeBlocksCount (int): Total number of processing blocks (for parallelization).
+    """
     from pyalicevision import system as avsys
 
     # Parse sfmdata, create compatible images
