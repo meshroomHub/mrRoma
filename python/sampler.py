@@ -7,6 +7,34 @@ import re
 from pathlib import Path
 import json
 import logging
+import torch
+import torch.nn.functional as F
+
+def max_pool_confidence(confidence, radiusMP):
+    if radiusMP <= 0:
+        return confidence
+
+    confidence2d = confidence.squeeze()
+    if confidence2d.ndim != 2:
+        raise ValueError("confidence must be a 2d array or a single-channel image")
+
+    kernelSize = radiusMP * 2 + 1
+
+    # Add a unique per-pixel tiebreaker so that within each window only one pixel
+    # can match the pooled maximum, even when multiple pixels share the same value.
+    tiebreaker = np.arange(confidence2d.size, dtype=np.float32).reshape(confidence2d.shape)
+    tiebreaker *= 1e-10 / (confidence2d.max() + 1e-12)
+    confidence2d_tb = confidence2d + tiebreaker
+
+    confidenceTensor = torch.from_numpy(np.ascontiguousarray(confidence2d_tb)).unsqueeze(0).unsqueeze(0)
+    pooled = F.max_pool2d(confidenceTensor, kernel_size=kernelSize, stride=1, padding=radiusMP)
+    pooled = pooled.squeeze(0).squeeze(0).numpy()
+
+    confidence2d = np.where(confidence2d_tb == pooled, confidence2d, 0)
+    if confidence.ndim == 3:
+        confidence2d = confidence2d[:, :, np.newaxis]
+
+    return confidence2d
 
 def kde(x, std = 0.1):
     """
@@ -169,34 +197,36 @@ def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, fi
     return uncertaintiesByPair
 
 
-def get_samples(confidence, minConfidence, maxMatches):
+def get_samples(confidence, minConfidence, maxMatches, radiusMP):
     """ Using uncertainty array, extract a list of samples
 
     Parameters:
         confidence a 2d array containing the warp uncertainty
         minConfidence minimal confidence allowed
         maxMatches maximal number of matches
+        radiusMP parameter of max pooling
     """
 
     sample_thresh = minConfidence 
-    
+    pooledConfidence = max_pool_confidence(confidence, radiusMP)
+
     #Create 2d grids
-    coords2d = create_coordinates(confidence.shape[1], confidence.shape[0])
+    coords2d = create_coordinates(pooledConfidence.shape[1], pooledConfidence.shape[0])
     
     #reshape to vector
-    confidence = confidence.squeeze()
+    pooledConfidence = pooledConfidence.squeeze()
     coords = coords2d.reshape(-1, 2)
-    confidence = confidence.reshape(-1)
+    pooledConfidence = pooledConfidence.reshape(-1)
 
     #remove bad elements
-    coords = coords[confidence > sample_thresh]
-    confidence = confidence[confidence > sample_thresh]
+    coords = coords[pooledConfidence > sample_thresh]
+    pooledConfidence = pooledConfidence[pooledConfidence > sample_thresh]
 
     if confidence.shape[0] == 0:
         return np.array(())
 
-    max_samples = min(maxMatches * 4, len(confidence))
-    probabilities = confidence / confidence.sum()
+    max_samples = min(maxMatches * 4, len(pooledConfidence))
+    probabilities = pooledConfidence / pooledConfidence.sum()
     
     samples = np.random.choice(len(probabilities), size = max_samples, p = probabilities, replace=False)
 
@@ -314,7 +344,7 @@ def get_matches(coords, warp, confidence):
     
     return ret
 
-def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, samplesFolder, filtersFolder, minConfidence, maxMatches, rangeIteration, rangeBlocksCount):
+def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, samplesFolder, filtersFolder, minConfidence, maxMatches, radiusMP, rangeIteration, rangeBlocksCount):
 
     """ This high level function is extracting samples form the warp images
 
@@ -367,7 +397,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, 
 
      #Loop over all reference images
     for referenceId in refsToProcess:
-        
+
         # Retrieve all pairs for this reference image
         pairs = plistByRef[referenceId]
         
@@ -391,7 +421,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, 
                 #grouped[mask] = 0
         
         reference_iinfo = iinfos[referenceId]
-        samples_A_B = get_samples(grouped, 0.0, maxMatches)
+        samples_A_B = get_samples(grouped, 0.0, maxMatches, radiusMP)
         if len(samples_A_B.shape) == 1:
             logging.info(f"No valid samples for reference #{referenceId}")
             continue
@@ -455,6 +485,7 @@ if __name__ == '__main__':
     parser.add_argument('--samplesFolder', type=str, help='')
     parser.add_argument('--filtersFolder', type=str, help='')
     parser.add_argument('--maxMatches', type=int, help='')
+    parser.add_argument('--radiusMP', type=int, help='')
     parser.add_argument('--minConfidence', type=float, help='')
     parser.add_argument('--rangeIteration', type=int, help='', default=0)
     parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
@@ -471,6 +502,7 @@ if __name__ == '__main__':
                     filtersFolder=args.filtersFolder,
                     minConfidence=args.minConfidence,
                     maxMatches=args.maxMatches,
+                    radiusMP=args.radiusMP,
                     rangeIteration=args.rangeIteration,
                     rangeBlocksCount=args.rangeBlocksCount)
     else:
