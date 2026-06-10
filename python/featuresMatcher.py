@@ -60,7 +60,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(warpFolder, pair_string + "_confidence.exr")
+        path_confidence = os.path.join(path_confidence, pair_string + "_confidence.exr")
         warp_A_B = open_image_as_numpy(path_warp)
         confidence_A_B = open_image_as_numpy(path_confidence, True)
 

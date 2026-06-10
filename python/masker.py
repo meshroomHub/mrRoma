@@ -84,7 +84,7 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
         #Build paths
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(warpFolder, pair_string + "_confidence.exr")
+        path_confidence = os.path.join(confidenceFolder, pair_string + "_confidence.exr")
 
         logging.info(f"Processing pair {pair_string}")
         
