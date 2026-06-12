@@ -171,17 +171,26 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
-    pairsToProcess = list(plist)
+    pairsToProcessTmp = list(plist)
+    pairsToProcess = list()
+    for pair in pairsToProcessTmp:
+        if not pair[0] in iinfos or not pair[1] in iinfos:
+            continue
+        pairsToProcess.append(pair)
 
     #Compute parallelization parameters using the number of pairs to process
     (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(pairsToProcess))
     if not valid:
         logging.error("Range is out of bounds.")
         return
-
     
     pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
-    
+
+    from collections import defaultdict
+    pairsByReference = defaultdict(list)
+    for pair in pairsToProcess:
+        pairsByReference[pair[0]].append(pair[1])
+
     logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
     logging.info("Loading model")
 
@@ -191,7 +200,7 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
     dinov3_path = None
     if "ROMATCH_MODELS_PATH" in os.environ:
         modelPath = os.environ["ROMATCH_MODELS_PATH"]
-        romaModelPath = os.path.join(modelPath, "romav2.pt")
+        romaModelPath = os.path.join(modelPath, "romav2.0.1.pt")
         roma_weights = torch.load(romaModelPath, weights_only=True)
         dinov3_path = os.path.join(modelPath, "dinov3")
 
@@ -205,56 +214,59 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
     
     # Loop over all pairs of images received as parameter.
     # Each pair of images will be processed independently
-    for item in pairsToProcess:
+    for referenceId, listOthers in pairsByReference.items():
         
-        # SfmData was previously parsed,
-        # Retrieve the loaded information for the pair
-        referenceId = item[0]
-        otherId = item[1]
         referenceInfo = iinfos[referenceId]
-        otherInfo = iinfos[otherId]   
-
-        # Effectively do the matching
-        # Output is (batch_size, 2, H, W)
-        logging.info(f"Matching {referenceId} with {otherId}")
-
-        # Load images from disk
         imA = open_image_to_pil(referenceInfo.path)
-        imB = open_image_to_pil(otherInfo.path)
-        
-        # Effectively call roma processing
-        preds = model.match(imA, imB)
 
-        # Convert output to required format
-        warp_A_B = prepare_warp(preds["warp_AB"][0])
-        warp_B_A = prepare_warp(preds["warp_BA"][0])
-        confidence_A_B, confidence_B_A = (
-            prepare_confidence(preds["overlap_AB"][0]),
-            prepare_confidence(preds["overlap_BA"][0]),
-        )
+        for otherId in listOthers:
 
-        if checkLoops:
-            # Update uncertainty by analyzing the loop
-            updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, loopThreshold)
+            # SfmData was previously parsed,
+            # Retrieve the loaded information for the pair
+            otherInfo = iinfos[otherId]   
 
-        low_confidence = confidence_A_B[..., 0] < minConfidence
-        warp_A_B[low_confidence] = 0
-        confidence_A_B[low_confidence] = 0
+            # Effectively do the matching
+            # Output is (batch_size, 2, H, W)
+            logging.info(f"Matching {referenceId} with {otherId}")
 
-        # Saving warp image and confidence image
-        logging.info("saving matches")
-        pair_string = str(referenceId) + "_" + str(otherId)
-        path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(outputConfidenceFolder, pair_string + "_confidence.exr")
-        path_covariance = os.path.join(outputCovarianceFolder, pair_string + "_covariance.exr")
-        save_image(path_warp, warp_A_B, False)
-        save_image(path_confidence, confidence_A_B, True)
+            # Load images from disk
+            imB = open_image_to_pil(otherInfo.path)
+            
+            # Effectively call roma processing
+            logging.info(f"Start processing")
+            preds = model.match(imA, imB)
+            logging.info(f"end processing")
 
-        if outputCovarianceFlag:
-            precision_AB = preds["precision_AB"][0]
-            shape = preds["precision_AB"].shape
-            std_AB = prepare_confidence(torch.linalg.det(precision_AB) ** (-1 / 4))
-            save_image(path_covariance, std_AB[..., np.newaxis], True)
+            # Convert output to required format
+            warp_A_B = prepare_warp(preds["warp_AB"][0])
+            warp_B_A = prepare_warp(preds["warp_BA"][0])
+            confidence_A_B, confidence_B_A = (
+                prepare_confidence(preds["overlap_AB"][0]),
+                prepare_confidence(preds["overlap_BA"][0]),
+            )
+
+            if checkLoops:
+                # Update uncertainty by analyzing the loop
+                updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, loopThreshold)
+
+            low_confidence = confidence_A_B[..., 0] < minConfidence
+            warp_A_B[low_confidence] = 0
+            confidence_A_B[low_confidence] = 0
+
+            # Saving warp image and confidence image
+            logging.info("saving matches")
+            pair_string = str(referenceId) + "_" + str(otherId)
+            path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
+            path_confidence = os.path.join(outputConfidenceFolder, pair_string + "_confidence.exr")
+            path_covariance = os.path.join(outputCovarianceFolder, pair_string + "_covariance.exr")
+            save_image(path_warp, warp_A_B, False)
+            save_image(path_confidence, confidence_A_B, True)
+
+            if outputCovarianceFlag:
+                precision_AB = preds["precision_AB"][0]
+                shape = preds["precision_AB"].shape
+                std_AB = prepare_confidence(torch.linalg.det(precision_AB) ** (-1 / 4))
+                save_image(path_covariance, std_AB[..., np.newaxis], True)
 
 if __name__ == '__main__':
     import argparse

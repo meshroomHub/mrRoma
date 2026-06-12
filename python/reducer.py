@@ -96,10 +96,15 @@ def reduce_samples(inputSfMData, imagePairsList, samplesFolder, featuresFolder, 
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
+    pairsToProcess = list()
+    for pair in plist:
+        if not pair[0] in iinfos or not pair[1] in iinfos:
+            continue
+        pairsToProcess.append(pair)
     
     # build a list of image pairs indexed by their reference images
     plistByRef = dict()
-    for item in plist:
+    for item in pairsToProcess:
         ref = item[0]
         if ref in plistByRef:
             plistByRef[ref].append(item)

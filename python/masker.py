@@ -104,9 +104,15 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
+    pairsToProcessTmp = list(plist)
+    pairsToProcess = list()
+    for pair in pairsToProcessTmp:
+        if not pair[0] in iinfos or not pair[1] in iinfos:
+            continue
+        pairsToProcess.append(pair)
 
     
-    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(plist))
+    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(pairsToProcess))
     if not valid:
         logging.error("Error computing range.")
         raise RuntimeError("Error computing range.")
@@ -115,18 +121,19 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
     if len(masksFolders) == 0:
         logging.error("At least one masks folder is required.")
         raise RuntimeError("At least one masks folder is required.")
+
+    pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
+    logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
     
 
     # loop over pairs of images
-    for id in range(rangeStart, rangeEnd):
-
-        item = plist[id]
+    for item in pairsToProcess:
         
         #id of views
         referenceId = item[0]
         otherId = item[1]
 
-        #retrieve ImageInfos
+        # retrieve ImageInfos
         reference_iinfo = iinfos[referenceId]
         other_iinfo = iinfos[otherId]
 

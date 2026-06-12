@@ -69,14 +69,17 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
-    pairsToProcess = list(plist)
+    pairsToProcessTmp = list(plist)
+    pairsToProcess = list()
+    for pair in pairsToProcessTmp:
+        if not pair[0] in iinfos or not pair[1] in iinfos:
+            continue
+        pairsToProcess.append(pair)
 
-    blockSize = int(len(pairsToProcess) / rangeBlocksCount)
-    rangeStart = rangeIteration * blockSize
-    rangeEnd = rangeStart + blockSize
-    if rangeIteration + 1 == rangeBlocksCount:
-        rangeEnd = len(pairsToProcess)
-
+    (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(pairsToProcess))
+    if not valid:
+        logging.error("Error computing range.")
+        raise RuntimeError("Error computing range.")
     
     pairsToProcess = pairsToProcess[rangeStart:rangeEnd]
     logging.info(f"Processing elements {rangeStart} to {rangeEnd}")
@@ -98,7 +101,7 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, featuresFo
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
         path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(path_confidence, pair_string + "_confidence.exr")
+        path_confidence = os.path.join(warpFolder, pair_string + "_confidence.exr")
         warp_A_B = open_image_as_numpy(path_warp)
         confidence_A_B = open_image_as_numpy(path_confidence, True)
 
