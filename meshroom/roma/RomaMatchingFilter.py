@@ -1,4 +1,4 @@
-__version__ = "1.0"
+__version__ = "1.1"
 
 import os 
 from pathlib import Path
@@ -32,14 +32,14 @@ class RomaMatchingFilter(desc.CommandLineNode):
             value="",
         ),
         desc.File(
-            name="warpFolder",
-            label="warp folder",
+            name="warpArchive",
+            label="Warp Archive",
             description="",
             value=""
         ),
         desc.File(
-            name="confidenceFolder",
-            label="confidence folder",
+            name="confidenceArchive",
+            label="Confidence Archive",
             description="",
             value=""
         ),

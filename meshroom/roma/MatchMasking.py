@@ -1,4 +1,4 @@
-__version__ = "1.3"
+__version__ = "1.4"
 
 import os 
 from pathlib import Path
@@ -35,14 +35,14 @@ class MatchMasking(desc.CommandLineNode):
             value="",
         ),
         desc.File(
-            name="warpFolder",
-            label="warp folder",
+            name="warpArchive",
+            label="Warp Archive",
             description="",
             value=""
         ),
         desc.File(
-            name="confidenceFolder",
-            label="Confidence folder",
+            name="confidenceArchive",
+            label="Confidence Archive",
             description="",
             value=""
         ),
@@ -70,9 +70,9 @@ class MatchMasking(desc.CommandLineNode):
 
     outputs = [
         desc.File(
-            name="outputConfidenceFolder",
-            label="Output Confidence folder",
+            name="outputConfidenceArchive",
+            label="Output Confidence Archive",
             description="",
-            value="{nodeCacheFolder}"
+            value="{nodeCacheFolder}/confidence.h5"
         )
     ]

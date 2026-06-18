@@ -1,4 +1,4 @@
-__version__ = "1.2"
+__version__ = "1.3"
 
 import os 
 from pathlib import Path
@@ -36,14 +36,14 @@ class RomaSampler(desc.CommandLineNode):
             value="",
         ),
         desc.File(
-            name="warpFolder",
-            label="warp folder",
+            name="warpArchive",
+            label="Warp Archive",
             description="",
             value=""
         ),
         desc.File(
-            name="confidenceFolder",
-            label="confidence folder",
+            name="confidenceArchive",
+            label="Confidence Archive",
             description="",
             value=""
         ),

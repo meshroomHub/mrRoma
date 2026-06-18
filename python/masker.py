@@ -7,7 +7,9 @@ from common import *
 
 import math
 import os
+import time
 import logging
+import h5py, hdf5plugin
 
 from pathlib import Path
 
@@ -70,7 +72,7 @@ def find_mask_path(masksFolders, mask_filename):
     return None
 
 
-def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, masksFolders, masksExtension, outputConfidenceFolder, rangeIteration, rangeBlocksCount):
+def apply_masks(inputSfMData, imagePairsList, warpArchive, confidenceArchive, masksFolders, masksExtension, outputConfidenceArchive, rangeIteration, rangeBlocksCount):
     """
     Apply binary masks to dense confidence maps and write the results to disk.
 
@@ -82,17 +84,17 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
       determine which reference pixels map to masked regions in the other image
       and zeros their confidence as well,
     - skips the pair entirely if no reference mask is found,
-    - writes the filtered confidence map to ``outputConfidenceFolder``.
+    - writes the filtered confidence map to ``outputConfidenceArchive``.
 
     Args:
         inputSfMData (str): Path to the input SfM data file.
         imagePairsList (str): Path to the file listing image pairs to process.
-        warpFolder (str): Directory containing warp EXR files.
-        confidenceFolder (str): Directory containing input confidence EXR files.
+        warpArchive (str): Directory containing warp EXR files.
+        confidenceArchive (str): Directory containing input confidence EXR files.
         masksFolders (str | list[str] | None): One or more directories to search
             for mask images. Parsed by :func:`parse_masks_folders`.
         masksExtension (str): File extension of the mask images (e.g. ``"png"``).
-        outputConfidenceFolder (str): Directory where filtered confidence EXR
+        outputConfidenceArchive (str): Directory where filtered confidence EXR
             files are written.
         rangeIteration (int): Index of the current processing block (for parallelization).
         rangeBlocksCount (int): Total number of processing blocks (for parallelization).
@@ -139,14 +141,16 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
 
         #Build paths
         pair_string = str(referenceId) + "_" + str(otherId)
-        path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(confidenceFolder, pair_string + "_confidence.exr")
 
         logging.info(f"Processing pair {pair_string}")
-        
+
         #load images
-        warp_A_B = open_image_as_numpy(path_warp)
-        confidence_A_B = open_image_as_numpy(path_confidence, True)
+        with h5py.File(warpArchive, "r") as f_warp_h5, \
+             h5py.File(confidenceArchive, "r") as f_conf_h5:
+            if pair_string not in f_conf_h5 or pair_string not in f_warp_h5:
+                continue
+            warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
+            confidence_A_B = f_conf_h5[pair_string][()].astype(np.float32) / 255.0
 
         #get properties
         warpHeight = confidence_A_B.shape[0]
@@ -207,8 +211,21 @@ def apply_masks(inputSfMData, imagePairsList, warpFolder, confidenceFolder, mask
          
         
         #write output
-        path_confidence_output = os.path.join(outputConfidenceFolder, pair_string + "_confidence.exr")
-        save_image(path_confidence_output, confidence_A_B, True)
+        lock_path = f"{outputConfidenceArchive}.lock"
+        while True:
+            try:
+                _lfd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(_lfd)
+                break
+            except FileExistsError:
+                time.sleep(0.1)
+        try:
+            with h5py.File(outputConfidenceArchive, "a") as f_out:
+                if pair_string in f_out:
+                    del f_out[pair_string]
+                f_out.create_dataset(pair_string, data=(confidence_A_B * 255.0).astype(np.uint8), dtype=np.uint8, **hdf5plugin.LZ4(), chunks=True)
+        finally:
+            os.unlink(lock_path)
 
 if __name__ == '__main__':
     import argparse
@@ -221,11 +238,11 @@ if __name__ == '__main__':
     # create the parser for the "warp" sub-command
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
-    parser.add_argument('--warpFolder', type=str, help='')
-    parser.add_argument('--confidenceFolder', type=str, help='')
+    parser.add_argument('--warpArchive', type=str, help='')
+    parser.add_argument('--confidenceArchive', type=str, help='')
     parser.add_argument('--masksFolders', nargs='*', default=None, help='')
     parser.add_argument('--masksExtension', type=str, help='')
-    parser.add_argument('--outputConfidenceFolder', type=str, help='')
+    parser.add_argument('--outputConfidenceArchive', type=str, help='')
     parser.add_argument('--rangeIteration', type=int, help='', default=0)
     parser.add_argument('--rangeBlocksCount', type=int, help='', default=1)
     parser.set_defaults(func=apply_masks)
@@ -235,11 +252,11 @@ if __name__ == '__main__':
     if hasattr(args, 'func'):
         args.func(inputSfMData=args.inputSfMData,
                     imagePairsList=args.imagePairsList,
-                    warpFolder=args.warpFolder,
-                    confidenceFolder=args.confidenceFolder,
+                    warpArchive=args.warpArchive,
+                    confidenceArchive=args.confidenceArchive,
                     masksFolders=args.masksFolders,
                     masksExtension=args.masksExtension,
-                    outputConfidenceFolder=args.outputConfidenceFolder,
+                    outputConfidenceArchive=args.outputConfidenceArchive,
                     rangeIteration=args.rangeIteration,
                     rangeBlocksCount=args.rangeBlocksCount)
     else:

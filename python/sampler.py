@@ -9,6 +9,7 @@ import json
 import logging
 import torch
 import torch.nn.functional as F
+import h5py, hdf5plugin
 
 def max_pool_confidence(confidence, radiusMP):
     """
@@ -190,7 +191,7 @@ def updateUncertainty(grid, warp, confidence, model, threshold, reference_iinfo,
     y = y.reshape((height, width))
     confidence[y > (threshold)] = 0
 
-def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, filters, minConfidence):
+def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, filters, minConfidence):
     """
     Load and optionally filter confidence maps for a list of image pairs.
 
@@ -204,8 +205,8 @@ def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, fi
 
     Args:
         iinfos (dict): Mapping from view ID to image-info objects.
-        warpFolder (str): Directory containing warp EXR files.
-        confidenceFolder (str): Directory containing confidence EXR files.
+        warpArchive (str): Archive containing warp arrays.
+        confidenceArchive (str): Archive containing confidence arrays.
         imagePairsList (list): List of (referenceId, otherId) tuples to process.
         filters (list): Filter entries as returned by :func:`load_filters`.
             Pass an empty list to skip geometric filtering.
@@ -242,15 +243,13 @@ def build_uncertainties(iinfos, warpFolder, confidenceFolder, imagePairsList, fi
             continue
         
         pair_string = str(referenceId) + "_" + str(otherId)
-        path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(confidenceFolder, pair_string + "_confidence.exr")
 
-        if not Path(path_confidence).is_file():
-            continue
-
-        #load images
-        warp_A_B = open_image_as_numpy(path_warp)
-        confidence_A_B = open_image_as_numpy(path_confidence, True)
+        with h5py.File(warpArchive, "r") as f_warp_h5, \
+             h5py.File(confidenceArchive, "r") as f_conf_h5:
+            if pair_string not in f_conf_h5 or pair_string not in f_warp_h5:
+                continue
+            warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
+            confidence_A_B = f_conf_h5[pair_string][()].astype(np.float32) / 255.0
         confidence_A_B[confidence_A_B < minConfidence] = 0.0
 
         #Filter images
@@ -437,7 +436,7 @@ def get_matches(coords, warp, confidence):
     
     return ret
 
-def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, samplesFolder, filtersFolder, minConfidence, maxMatches, radiusMP, rangeIteration, rangeBlocksCount):
+def compute_samples(inputSfMData, imagePairsList, warpArchive, confidenceArchive, samplesFolder, filtersFolder, minConfidence, maxMatches, radiusMP, rangeIteration, rangeBlocksCount):
     """
     Extract and save feature samples and their matches from dense warp fields.
 
@@ -455,8 +454,8 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, 
     Args:
         inputSfMData (str): Path to the input SfM data file.
         imagePairsList (str): Path to the file listing image pairs to process.
-        warpFolder (str): Directory containing warp EXR files.
-        confidenceFolder (str): Directory containing confidence EXR files.
+        warpArchive (str): Archive containing warp arrays.
+        confidenceArchive (str): Archive containing confidence arrays.
         samplesFolder (str): Directory where output ``.npy`` sample files are written.
         filtersFolder (str): Directory with optional geometric filter JSON files
             (pass an empty string to disable filtering).
@@ -514,7 +513,7 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, 
         logging.info(f"Processing reference #{referenceId}")
 
         # Load uncertainties and store them using pair as key
-        uncertaintiesByPair = build_uncertainties(iinfos, warpFolder, confidenceFolder, pairs, filters, minConfidence)
+        uncertaintiesByPair = build_uncertainties(iinfos, warpArchive, confidenceArchive, pairs, filters, minConfidence)
         if len(uncertaintiesByPair) == 0:
             logging.info(f"No uncertainties for reference #{referenceId}")
             continue
@@ -561,10 +560,14 @@ def compute_samples(inputSfMData, imagePairsList, warpFolder, confidenceFolder, 
             other_iinfo = iinfos[otherId]
 
             pair_string = str(referenceId) + "_" + str(otherId)
-            path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
 
             #load images
-            warp_A_B = open_image_as_numpy(path_warp)
+            with h5py.File(warpArchive, "r") as f_warp_h5:
+                if pair_string not in f_warp_h5:
+                    logging.warning(f"Warp not found for pair {pair_string}, skipping.")
+                    continue
+                warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
+                
             confidence_A_B = uncertaintiesByPair[item]
             match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
 
@@ -590,8 +593,8 @@ if __name__ == '__main__':
     # create the parser for the "warp" sub-command
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
-    parser.add_argument('--warpFolder', type=str, help='')
-    parser.add_argument('--confidenceFolder', type=str, help='')
+    parser.add_argument('--warpArchive', type=str, help='')
+    parser.add_argument('--confidenceArchive', type=str, help='')
     parser.add_argument('--samplesFolder', type=str, help='')
     parser.add_argument('--filtersFolder', type=str, help='')
     parser.add_argument('--maxMatches', type=int, help='')
@@ -606,8 +609,8 @@ if __name__ == '__main__':
     if hasattr(args, 'func'):
         args.func(inputSfMData=args.inputSfMData,
                     imagePairsList=args.imagePairsList,
-                    warpFolder=args.warpFolder,
-                    confidenceFolder=args.confidenceFolder,
+                    warpArchive=args.warpArchive,
+                    confidenceArchive=args.confidenceArchive,
                     samplesFolder=args.samplesFolder,
                     filtersFolder=args.filtersFolder,
                     minConfidence=args.minConfidence,

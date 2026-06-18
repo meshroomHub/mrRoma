@@ -1,4 +1,4 @@
-__version__ = "1.1"
+__version__ = "1.2"
 
 import os 
 from pathlib import Path
@@ -66,22 +66,22 @@ class RomaMatcher(desc.CommandLineNode):
 
     outputs = [
         desc.File(
-            name="outputWarpFolder",
-            label="Output Warp folder",
+            name="outputWarpArchive",
+            label="Output Warp Archive",
             description="",
-            value="{nodeCacheFolder}"
+            value="{nodeCacheFolder}/warp.h5"
         ),
         desc.File(
-            name="outputConfidenceFolder",
-            label="Output Confidence folder",
+            name="outputConfidenceArchive",
+            label="Output Confidence Archive",
             description="",
-            value="{nodeCacheFolder}"
+            value="{nodeCacheFolder}/confidence.h5"
         ),
         desc.File(
-            name="outputCovarianceFolder",
-            label="Output Covariance folder",
+            name="outputCovarianceArchive",
+            label="Output Covariance Archive",
             description="",
-            value="{nodeCacheFolder}",
+            value="{nodeCacheFolder}/covariance.h5",
             enabled=lambda node : node.outputCovarianceFlag.value
         )
     ]

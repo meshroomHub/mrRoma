@@ -6,8 +6,10 @@ from romav2.features import Descriptor
 from common import *
 
 import os
+import time
 import torch
 import logging
+import h5py, hdf5plugin
 
 
 def prepare_warp(w):
@@ -132,7 +134,7 @@ def updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_
     confidence_A_B[invalid] = 0.0
     confidence_B_A[invalid] = 0.0
 
-def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarpFolder, outputConfidenceFolder, outputCovarianceFolder, checkLoops, loopThreshold, outputCovarianceFlag, rangeIteration, rangeBlocksCount):
+def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarpArchive, outputConfidenceArchive, outputCovarianceArchive, checkLoops, loopThreshold, outputCovarianceFlag, rangeIteration, rangeBlocksCount):
     """
     Run RoMa dense matching on a set of image pairs and save the results to disk.
 
@@ -150,9 +152,9 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
         imagePairsList (str): Path to the file listing image pairs to process.
         minConfidence (float): Minimum confidence threshold; matches below this
             value are discarded (warp and confidence set to 0).
-        outputWarpFolder (str): Directory for output warp EXR files.
-        outputConfidenceFolder (str): Directory for output confidence EXR files.
-        outputCovarianceFolder (str): Directory for output covariance EXR files.
+        outputWarpArchive (str): Archive path for warp.
+        outputConfidenceArchive (str): Archive path for confidence.
+        outputCovarianceArchive (str): Archive path for covariance.
         checkLoops (bool): If True, apply loop-closure filtering via
             :func:`updateUncertaintyWithLoops`.
         loopThreshold (float): Maximum round-trip error in pixels used for
@@ -171,12 +173,16 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
     plist = avmic.PairSet()
     if not avmic.loadPairsFromFile(imagePairsList, plist, False):
         raise RuntimeError("Error in image pairs list loading")
+    logging.info(f"Loaded {len(plist)} pairs from list")
+
+    # Filter out the pairs with views not in current sfmData
     pairsToProcessTmp = list(plist)
     pairsToProcess = list()
     for pair in pairsToProcessTmp:
         if not pair[0] in iinfos or not pair[1] in iinfos:
             continue
         pairsToProcess.append(pair)
+    logging.info(f"Kept {len(plist)} filtered pairs from list")
 
     #Compute parallelization parameters using the number of pairs to process
     (valid, rangeStart, rangeEnd) = avsys.rangeComputation(rangeIteration, rangeBlocksCount, len(pairsToProcess))
@@ -211,7 +217,9 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
     model.apply_setting("precise")
     upsampleResolution = (model.H_lr, model.W_lr) if (model.H_hr is None or model.W_hr is None) else (model.H_hr, model.W_hr) 
 
-    
+    # Setup filenames
+    lock_path = f"{outputWarpArchive}.lock"
+
     # Loop over all pairs of images received as parameter.
     # Each pair of images will be processed independently
     for referenceId, listOthers in pairsByReference.items():
@@ -221,52 +229,74 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
 
         for otherId in listOthers:
 
-            # SfmData was previously parsed,
-            # Retrieve the loaded information for the pair
-            otherInfo = iinfos[otherId]   
+                # SfmData was previously parsed,
+                # Retrieve the loaded information for the pair
+                otherInfo = iinfos[otherId]   
 
-            # Effectively do the matching
-            # Output is (batch_size, 2, H, W)
-            logging.info(f"Matching {referenceId} with {otherId}")
+                # Effectively do the matching
+                # Output is (batch_size, 2, H, W)
+                logging.info(f"Matching {referenceId} with {otherId}")
 
-            # Load images from disk
-            imB = open_image_to_pil(otherInfo.path)
-            
-            # Effectively call roma processing
-            logging.info(f"Start processing")
-            preds = model.match(imA, imB)
-            logging.info(f"end processing")
+                # Load images from disk
+                imB = open_image_to_pil(otherInfo.path)
+                
+                # Effectively call roma processing
+                logging.info(f"Start processing")
+                preds = model.match(imA, imB)
+                logging.info(f"end processing")
 
-            # Convert output to required format
-            warp_A_B = prepare_warp(preds["warp_AB"][0])
-            warp_B_A = prepare_warp(preds["warp_BA"][0])
-            confidence_A_B, confidence_B_A = (
-                prepare_confidence(preds["overlap_AB"][0]),
-                prepare_confidence(preds["overlap_BA"][0]),
-            )
+                # Convert output to required format
+                warp_A_B = prepare_warp(preds["warp_AB"][0])
+                warp_B_A = prepare_warp(preds["warp_BA"][0])
+                confidence_A_B, confidence_B_A = (
+                    prepare_confidence(preds["overlap_AB"][0]),
+                    prepare_confidence(preds["overlap_BA"][0]),
+                )
 
-            if checkLoops:
-                # Update uncertainty by analyzing the loop
-                updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, loopThreshold)
+                if checkLoops:
+                    # Update uncertainty by analyzing the loop
+                    updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, loopThreshold)
 
-            low_confidence = confidence_A_B[..., 0] < minConfidence
-            warp_A_B[low_confidence] = 0
-            confidence_A_B[low_confidence] = 0
+                low_confidence = confidence_A_B[..., 0] < minConfidence
+                warp_A_B[low_confidence] = 0
+                confidence_A_B[low_confidence] = 0
 
-            # Saving warp image and confidence image
-            logging.info("saving matches")
-            pair_string = str(referenceId) + "_" + str(otherId)
-            path_warp = os.path.join(outputWarpFolder, pair_string + "_warp.exr")
-            path_confidence = os.path.join(outputConfidenceFolder, pair_string + "_confidence.exr")
-            path_covariance = os.path.join(outputCovarianceFolder, pair_string + "_covariance.exr")
-            save_image(path_warp, warp_A_B, False)
-            save_image(path_confidence, confidence_A_B, True)
+                # Saving warp image and confidence image
+                logging.info("saving matches")
+                pair_string = str(referenceId) + "_" + str(otherId)
 
-            if outputCovarianceFlag:
-                precision_AB = preds["precision_AB"][0]
-                shape = preds["precision_AB"].shape
-                std_AB = prepare_confidence(torch.linalg.det(precision_AB) ** (-1 / 4))
-                save_image(path_covariance, std_AB[..., np.newaxis], True)
+                # Atomic exclusive-create lock: O_CREAT|O_EXCL is guaranteed
+                # atomic on NFS/Lustre, unlike flock which is not supported.
+                while True:
+                    try:
+                        _lfd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                        os.close(_lfd)
+                        break
+                    except FileExistsError:
+                        time.sleep(0.1)
+                try:
+                    with h5py.File(outputWarpArchive, "a") as f_warp, \
+                         h5py.File(outputConfidenceArchive, "a") as f_conf:
+                        if pair_string in f_warp:
+                            del f_warp[pair_string]
+                        f_warp.create_dataset(pair_string, data=warp_A_B, dtype=np.float16, **hdf5plugin.LZ4(), chunks=True)
+                        if pair_string in f_conf:
+                            del f_conf[pair_string]
+                        f_conf.create_dataset(pair_string, data=(confidence_A_B * 255.0).astype(np.uint8), dtype=np.uint8, **hdf5plugin.LZ4(), chunks=True)
+                    if outputCovarianceFlag:
+                        precision_AB = preds["precision_AB"][0]
+                        shape = preds["precision_AB"].shape
+                        std_AB = prepare_confidence(torch.linalg.det(precision_AB) ** (-1 / 4))
+                        with h5py.File(outputCovarianceArchive, "a") as f_cv:
+                            if pair_string in f_cv:
+                                del f_cv[pair_string]
+                            f_cv.create_dataset(pair_string, data=std_AB, dtype=np.float16, **hdf5plugin.LZ4(), chunks=True)                    
+                except:
+                    logging.error("Error writing output files")
+                    raise RuntimeError()
+                finally:
+                    os.unlink(lock_path)
+                    
 
 if __name__ == '__main__':
     import argparse
@@ -279,9 +309,9 @@ if __name__ == '__main__':
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
     parser.add_argument('--minConfidence', type=float, help='', default=0.0)
-    parser.add_argument('--outputWarpFolder', type=str, help='')
-    parser.add_argument('--outputConfidenceFolder', type=str, help='')
-    parser.add_argument('--outputCovarianceFolder', type=str, help='')
+    parser.add_argument('--outputWarpArchive', type=str, help='')
+    parser.add_argument('--outputConfidenceArchive', type=str, help='')
+    parser.add_argument('--outputCovarianceArchive', type=str, help='')
     parser.add_argument('--checkLoops', type=str_to_bool, help='', default=False)
     parser.add_argument('--loopThreshold', type=float, help='Maximum accepted round-trip distance in pixels', default=3.0)
     parser.add_argument('--outputCovarianceFlag', type=str_to_bool, help='', default=False)
@@ -295,9 +325,9 @@ if __name__ == '__main__':
         args.func(inputSfMData=args.inputSfMData,
                     imagePairsList=args.imagePairsList,
                     minConfidence=args.minConfidence,
-                    outputWarpFolder=args.outputWarpFolder,
-                    outputConfidenceFolder=args.outputConfidenceFolder,
-                    outputCovarianceFolder=args.outputCovarianceFolder,
+                    outputWarpArchive=args.outputWarpArchive,
+                    outputConfidenceArchive=args.outputConfidenceArchive,
+                    outputCovarianceArchive=args.outputCovarianceArchive,
                     checkLoops=args.checkLoops,
                     loopThreshold=args.loopThreshold,
                     outputCovarianceFlag=args.outputCovarianceFlag,

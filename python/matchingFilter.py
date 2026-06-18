@@ -8,6 +8,7 @@ from common import *
 
 import os
 import math
+import h5py, hdf5plugin
 
 def regionToNumpy(region):
     """
@@ -32,7 +33,7 @@ def regionToNumpy(region):
 
     return array
 
-def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, confidenceFolder, featuresFolder, matchesFolder, outputMatchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
+def compute_featuresMatcher(inputSfMData, imagePairsList, warpArchive, confidenceArchive, featuresFolder, matchesFolder, outputMatchesFolder, masksFolder, masksExtension, minConfidence, rangeIteration, rangeBlocksCount):
     """
     Filter existing feature matches using dense warp consistency.
 
@@ -50,8 +51,8 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, confidence
     Args:
         inputSfMData (str): Path to the input SfM data file.
         imagePairsList (str): Path to the file listing image pairs to process.
-        warpFolder (str): Directory containing warp EXR files.
-        confidenceFolder (str): Directory containing confidence EXR files.
+        warpArchive (str): Archive containing warps arrays.
+        confidenceArchive (str): Archive containing confidence arrays.
         featuresFolder (str): Directory containing feature ``.feat`` / ``.desc`` files.
         matchesFolder (str): Directory with the input match files to filter.
         outputMatchesFolder (str): Directory where filtered match files are written.
@@ -95,10 +96,12 @@ def compute_featuresMatcher(inputSfMData, imagePairsList, warpFolder, confidence
 
         #load warp
         pair_string = str(referenceId) + "_" + str(otherId)
-        path_warp = os.path.join(warpFolder, pair_string + "_warp.exr")
-        path_confidence = os.path.join(confidenceFolder, pair_string + "_confidence.exr")
-        warp_A_B = open_image_as_numpy(path_warp)
-        confidence_A_B = open_image_as_numpy(path_confidence, True)
+        with h5py.File(warpArchive, "r") as f_warp_h5, \
+             h5py.File(confidenceArchive, "r") as f_conf_h5:
+            if pair_string not in f_conf_h5 or pair_string not in f_warp_h5:
+                continue
+            warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
+            confidence_A_B = f_conf_h5[pair_string][()].astype(np.float32) / 255.0
 
         #Load mask
         mask = None
@@ -186,8 +189,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--inputSfMData', type=str, help='')
     parser.add_argument('--imagePairsList', type=str, help='')
-    parser.add_argument('--warpFolder', type=str, help='')
-    parser.add_argument('--confidenceFolder', type=str, help='')
+    parser.add_argument('--warpArchive', type=str, help='')
+    parser.add_argument('--confidenceArchive', type=str, help='')
     parser.add_argument('--featuresFolder', type=str, help='')
     parser.add_argument('--matchesFolder', type=str, help='')
     parser.add_argument('--output', type=str, help='')
@@ -203,8 +206,8 @@ if __name__ == '__main__':
     if hasattr(args, 'func'): 
         args.func(inputSfMData=args.inputSfMData,
                 imagePairsList=args.imagePairsList,
-                warpFolder=args.warpFolder,
-                confidenceFolder=args.confidenceFolder,
+                warpArchive=args.warpArchive,
+                confidenceArchive=args.confidenceArchive,
                 featuresFolder=args.featuresFolder,
                 matchesFolder=args.matchesFolder,
                 outputMatchesFolder=args.output,
