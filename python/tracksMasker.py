@@ -28,8 +28,8 @@ def compute_masks(inputSfMData, outputDirectory, imagePairsList, existingTracks,
     from pyalicevision import track as avtrack
     
     # Todo : I need to find a way to guess it automatically.
-    w = 1280
-    h = 1280
+    romaWidth = 1280
+    romaHeight = 1280
 
     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
@@ -95,14 +95,14 @@ def compute_masks(inputSfMData, outputDirectory, imagePairsList, existingTracks,
 
         pts = np.array(tracksPerView[referenceId])
 
-        ix = np.round(pts[:, 0] * w).astype(int)
-        iy = np.round(pts[:, 1] * h).astype(int)
-        valid = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+        ix = np.round(pts[:, 0] * romaWidth).astype(int)
+        iy = np.round(pts[:, 1] * romaHeight).astype(int)
+        valid = (ix >= 0) & (ix < romaWidth) & (iy >= 0) & (iy < romaHeight)
         ix = ix[valid]
         iy = iy[valid]
 
         # impulses (vectorized set)
-        imp = np.zeros((h, w, 1), dtype=bool)
+        imp = np.zeros((romaHeight, romaWidth, 1), dtype=bool)
         imp[iy, ix] = True
 
         # Compute offsets around 0 which are inside the disk
@@ -113,8 +113,8 @@ def compute_masks(inputSfMData, outputDirectory, imagePairsList, existingTracks,
         # binary dilation by OR-ing shifted impulses
         out = np.zeros_like(imp)
         for dy, dx in offsets:
-            ys0 = max(0,  dy); ys1 = min(h, h + dy)
-            xs0 = max(0,  dx); xs1 = min(w, w + dx)
+            ys0 = max(0,  dy); ys1 = min(romaHeight, romaHeight + dy)
+            xs0 = max(0,  dx); xs1 = min(romaWidth, romaWidth + dx)
             out[ys0:ys1, xs0:xs1] |= imp[ys0-dy:ys1-dy, xs0-dx:xs1-dx]
 
         #write output

@@ -191,7 +191,7 @@ def updateUncertainty(grid, warp, confidence, model, threshold, reference_iinfo,
     y = y.reshape((height, width))
     confidence[y > (threshold)] = 0
 
-def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, filters, minConfidence):
+def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, filtersByPair, minConfidence):
     """
     Load and optionally filter confidence maps for a list of image pairs.
 
@@ -205,11 +205,11 @@ def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, 
 
     Args:
         iinfos (dict): Mapping from view ID to image-info objects.
-        warpArchive (str): Archive containing warp arrays.
-        confidenceArchive (str): Archive containing confidence arrays.
+        warpArchive: Open HDF5 archive containing warp arrays.
+        confidenceArchive: Open HDF5 archive containing confidence arrays.
         imagePairsList (list): List of (referenceId, otherId) tuples to process.
-        filters (list): Filter entries as returned by :func:`load_filters`.
-            Pass an empty list to skip geometric filtering.
+        filtersByPair (dict): Optional geometric filters indexed by image pair.
+            Pass an empty dict to skip geometric filtering.
         minConfidence (float): Confidence values below this are set to 0.
 
     Returns:
@@ -227,33 +227,27 @@ def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, 
         reference_iinfo = iinfos[referenceId]
         other_iinfo = iinfos[otherId]
 
-        # Find the associated filter
-        hasFilter = False
-        for filter in filters:
-            if filter[0][0] == referenceId and filter[0][1] == otherId:
-                values = filter[1]
-                v = values["model"]
-                model = np.array([[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
-                threshold = values["threshold"]
-                hasFilter = True
+        filterValues = filtersByPair.get((referenceId, otherId))
+        hasFilter = filterValues is not None
 
-        if len(filters) > 0 and hasFilter is False:
+        if len(filtersByPair) > 0 and hasFilter is False:
             #If a filter is not found : no matches
             logging.debug(f"filtered {referenceId} {otherId}")
             continue
         
         pair_string = str(referenceId) + "_" + str(otherId)
 
-        with h5py.File(warpArchive, "r") as f_warp_h5, \
-             h5py.File(confidenceArchive, "r") as f_conf_h5:
-            if pair_string not in f_conf_h5 or pair_string not in f_warp_h5:
-                continue
-            warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
-            confidence_A_B = f_conf_h5[pair_string][()].astype(np.float32) / 255.0
+        if pair_string not in confidenceArchive or pair_string not in warpArchive:
+            continue
+        confidence_A_B = confidenceArchive[pair_string][()].astype(np.float32) / 255.0
         confidence_A_B[confidence_A_B < minConfidence] = 0.0
 
         #Filter images
         if hasFilter:
+            warp_A_B = warpArchive[pair_string][()].astype(np.float32)
+            v = filterValues["model"]
+            model = np.array([[v[0], v[1], v[2]], [v[3], v[4], v[5]], [v[6], v[7], v[8]]])
+            threshold = filterValues["threshold"]
             warpHeight = confidence_A_B.shape[0]
             warpWidth = confidence_A_B.shape[1]
             grid = create_coordinates(warpWidth, warpHeight)
@@ -420,19 +414,14 @@ def get_matches(coords, warp, confidence):
     height = warp.shape[0]
     width = warp.shape[1]
 
-    ret = np.zeros((coords.shape[0], 3))
-    countSamples = coords.shape[0]
-    
-    for i in range(0, countSamples):
-        x = coords[i, 0]
-        y = coords[i, 1]
+    ret = np.empty((coords.shape[0], 3), dtype=np.float32)
 
-        ix = int(x * float(width))
-        iy = int(y * float(height))
+    ix = np.clip((coords[:, 0] * float(width)).astype(np.int64), 0, width - 1)
+    iy = np.clip((coords[:, 1] * float(height)).astype(np.int64), 0, height - 1)
 
-        ret[i, 0] = warp[iy, ix, 0]
-        ret[i, 1] = warp[iy, ix, 1]
-        ret[i, 2] = confidence[iy, ix, 0]
+    ret[:, 0] = warp[iy, ix, 0]
+    ret[:, 1] = warp[iy, ix, 1]
+    ret[:, 2] = confidence[iy, ix, 0]
     
     return ret
 
@@ -468,7 +457,9 @@ def compute_samples(inputSfMData, imagePairsList, warpArchive, confidenceArchive
     from pyalicevision import system as avsys
     
     # First of all, load the optional filters
-    filters = load_filters(filtersFolder)
+    filtersByPair = dict()
+    for filterEntry in load_filters(filtersFolder):
+        filtersByPair[(filterEntry[0][0], filterEntry[0][1])] = filterEntry[1]
 
     # Parse sfm
     iinfos = get_imageinfos_from_sfmdata(inputSfMData)
@@ -504,83 +495,85 @@ def compute_samples(inputSfMData, imagePairsList, warpArchive, confidenceArchive
         
     refsToProcess = refsToProcess[rangeStart:rangeEnd]
 
-     #Loop over all reference images
-    for referenceId in refsToProcess:
+    with h5py.File(warpArchive, "r") as f_warp_h5, \
+         h5py.File(confidenceArchive, "r") as f_conf_h5:
 
-        # Retrieve all pairs for this reference image
-        pairs = plistByRef[referenceId]
-        
-        logging.info(f"Processing reference #{referenceId}")
+        #Loop over all reference images
+        for referenceId in refsToProcess:
 
-        # Load uncertainties and store them using pair as key
-        uncertaintiesByPair = build_uncertainties(iinfos, warpArchive, confidenceArchive, pairs, filters, minConfidence)
-        if len(uncertaintiesByPair) == 0:
-            logging.info(f"No uncertainties for reference #{referenceId}")
-            continue
+            # Retrieve all pairs for this reference image
+            pairs = plistByRef[referenceId]
+            
+            logging.info(f"Processing reference #{referenceId}")
 
-        #we sum the certainties together for the same reference image
-        #We also sample once for all pairs with the same reference image
-        grouped = None
-        for item in uncertaintiesByPair:
-            if grouped is None:
-                grouped = uncertaintiesByPair[item].copy()
-            else:
-                #mask = (grouped == 0) | (uncertaintiesByPair[item] == 0)
-                grouped += uncertaintiesByPair[item]
-                #grouped[mask] = 0
-        
-        reference_iinfo = iinfos[referenceId]
-        samples_A_B = get_samples(grouped, 0.0, maxMatches, radiusMP)
-        if len(samples_A_B.shape) == 1:
-            logging.info(f"No valid samples for reference #{referenceId}")
-            continue
+            # Load uncertainties and store them using pair as key
+            uncertaintiesByPair = build_uncertainties(iinfos, f_warp_h5, f_conf_h5, pairs, filtersByPair, minConfidence)
+            if len(uncertaintiesByPair) == 0:
+                logging.info(f"No uncertainties for reference #{referenceId}")
+                continue
 
-        #Compute scale of the features
-        wscale = math.log(float(reference_iinfo.width) / float(grouped.shape[1]), 2)
-        hscale = math.log(float(reference_iinfo.height) / float(grouped.shape[0]), 2)
-        scale = max(wscale, hscale)
-
-        #scale to original size
-        scaledSamples = np.zeros((samples_A_B.shape[0], 4))
-        scaledSamples[:, 0] = samples_A_B[:, 0] * reference_iinfo.width 
-        scaledSamples[:, 1] = samples_A_B[:, 1] * reference_iinfo.height
-        scaledSamples[:, 2] = 1.0
-        scaledSamples[:, 3] = scale
-
-        path_output = os.path.join(samplesFolder, str(referenceId))
-        np.save(path_output, scaledSamples)
-
-        # loop over pairs of images
-        for item in uncertaintiesByPair :
-
-            referenceId = item[0]
-            otherId = item[1]
-
+            #we sum the certainties together for the same reference image
+            #We also sample once for all pairs with the same reference image
+            grouped = None
+            for item in uncertaintiesByPair:
+                if grouped is None:
+                    grouped = uncertaintiesByPair[item].copy()
+                else:
+                    #mask = (grouped == 0) | (uncertaintiesByPair[item] == 0)
+                    grouped += uncertaintiesByPair[item]
+                    #grouped[mask] = 0
+            
             reference_iinfo = iinfos[referenceId]
-            other_iinfo = iinfos[otherId]
+            samples_A_B = get_samples(grouped, 0.0, maxMatches, radiusMP)
+            if len(samples_A_B.shape) == 1:
+                logging.info(f"No valid samples for reference #{referenceId}")
+                continue
 
-            pair_string = str(referenceId) + "_" + str(otherId)
+            #Compute scale of the features
+            wscale = math.log(float(reference_iinfo.width) / float(grouped.shape[1]), 2)
+            hscale = math.log(float(reference_iinfo.height) / float(grouped.shape[0]), 2)
+            scale = max(wscale, hscale)
 
-            #load images
-            with h5py.File(warpArchive, "r") as f_warp_h5:
+            #scale to original size
+            scaledSamples = np.zeros((samples_A_B.shape[0], 4))
+            scaledSamples[:, 0] = samples_A_B[:, 0] * reference_iinfo.width 
+            scaledSamples[:, 1] = samples_A_B[:, 1] * reference_iinfo.height
+            scaledSamples[:, 2] = 1.0
+            scaledSamples[:, 3] = scale
+
+            path_output = os.path.join(samplesFolder, str(referenceId))
+            np.save(path_output, scaledSamples)
+
+            # loop over pairs of images
+            for item in uncertaintiesByPair :
+
+                referenceId = item[0]
+                otherId = item[1]
+
+                reference_iinfo = iinfos[referenceId]
+                other_iinfo = iinfos[otherId]
+
+                pair_string = str(referenceId) + "_" + str(otherId)
+
+                #load images
                 if pair_string not in f_warp_h5:
                     logging.warning(f"Warp not found for pair {pair_string}, skipping.")
                     continue
                 warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
                 
-            confidence_A_B = uncertaintiesByPair[item]
-            match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
+                confidence_A_B = uncertaintiesByPair[item]
+                match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
 
-            #scale to original size
-            scaledSamples = np.zeros((match_A_B.shape[0], 4))
-            scaledSamples[:, 0] = match_A_B[:, 0] * other_iinfo.width
-            scaledSamples[:, 1] = match_A_B[:, 1] * other_iinfo.height
-            scaledSamples[:, 2] = match_A_B[:, 2]
-            scaledSamples[:, 3] = scale
+                #scale to original size
+                scaledSamples = np.zeros((match_A_B.shape[0], 4))
+                scaledSamples[:, 0] = match_A_B[:, 0] * other_iinfo.width
+                scaledSamples[:, 1] = match_A_B[:, 1] * other_iinfo.height
+                scaledSamples[:, 2] = match_A_B[:, 2]
+                scaledSamples[:, 3] = scale
 
-            #scale to original size
-            path_output = os.path.join(samplesFolder, str(referenceId) + "_" + str(otherId))
-            np.save(path_output, scaledSamples)
+                #scale to original size
+                path_output = os.path.join(samplesFolder, str(referenceId) + "_" + str(otherId))
+                np.save(path_output, scaledSamples)
 
 if __name__ == '__main__':
     import argparse

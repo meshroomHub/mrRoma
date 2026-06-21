@@ -46,29 +46,54 @@ def prepare_confidence(c):
     
     return c
 
-def check_loop(warp_A_B, warp_B_A):
+def check_loop(warp_A_B, warp_B_A, dist_B_A):
     """
-    Compute the round-trip (loop-closure) error for a pair of dense warps.
+    Compute a zoom-tolerant loop-consistency error for each A pixel.
 
-    For every pixel in image A, the forward warp maps it to a location in B.
-    The function then samples the backward warp at that location and measures
-    how far the result deviates from the original pixel position. Bilinear
-    sampling is approximated by taking the minimum distance among the four
-    nearest-neighbor corners.
+    For every pixel ``p`` in image A the function:
+
+    1. Follows ``warp_A_B`` to find the landing position ``q`` in image B.
+    2. Evaluates ``warp_B_A`` at each of the four nearest integer neighbours
+       of ``q`` to back-project to image A.
+    3. Measures the Euclidean distance from each back-projected position to
+       ``p`` (the A→B→A round-trip error at that neighbour).
+    4. If ``dist_B_A`` is provided, replaces each neighbour's round-trip
+       distance with ``min(A→B→A error, dist_B_A[neighbour])``.  This
+       introduces the B→A→B error at the landing spot as an alternative
+       consistency criterion (see :func:`updateUncertaintyWithLoops` for the
+       rationale).
+    5. Returns the minimum of these (possibly combined) values across all
+       four neighbours.
+
+    Pixels whose forward coordinate falls outside the image are assigned an
+    error of ``inf``.
 
     Args:
-        warp_A_B (numpy.ndarray | None): Dense warp from A to B, shape (H, W, 3),
-            with xy coordinates normalised to [0, 1] in the first two channels.
-        warp_B_A (numpy.ndarray | None): Dense warp from B to A, same layout.
+        warp_A_B (numpy.ndarray): Forward warp of shape (H, W, 2) with
+            normalised [0, 1] coordinates mapping pixels from A to B.
+            Returns ``None`` immediately if this argument is ``None``.
+        warp_B_A (numpy.ndarray): Backward warp of shape (H, W, 2) with
+            normalised [0, 1] coordinates mapping pixels from B to A.
+            Returns ``None`` immediately if this argument is ``None``.
+        dist_B_A (numpy.ndarray or None): Pre-computed loop-error map of
+            shape (H, W, 1) giving the B→A→B round-trip error for each B
+            pixel.  When provided, it serves as an escape hatch: a pixel
+            whose A→B→A error is large can still be considered consistent
+            if the B→A→B error at its landing spot is small.  Pass ``None``
+            to evaluate the A→B→A error alone.
 
     Returns:
-        numpy.ndarray | None: Per-pixel round-trip error in pixels, shape
-            (H, W, 1), or None if either warp is None or the shapes differ.
+        numpy.ndarray or None: Float array of shape (H, W, 1) containing the
+            per-pixel loop-consistency error in pixels, or ``None`` if either
+            warp is ``None`` or the warp shapes are incompatible.
     """
     if warp_A_B is None or warp_B_A is None:
         return None
 
     if warp_A_B.shape != warp_B_A.shape:
+        return None
+
+    if dist_B_A is not None and warp_A_B.shape != dist_B_A.shape:
         return None
 
     height, width = warp_A_B.shape[0], warp_A_B.shape[1]
@@ -99,7 +124,10 @@ def check_loop(warp_A_B, warp_B_A):
     def dist_at(iy, ix):
         back_x = warp_B_A[iy, ix, 0] * width
         back_y = warp_B_A[iy, ix, 1] * height
-        return np.sqrt((back_x - x_orig) ** 2 + (back_y - y_orig) ** 2)
+        ret = np.sqrt((back_x - x_orig) ** 2 + (back_y - y_orig) ** 2)
+        if dist_B_A is not None:
+            ret = np.minimum(dist_B_A[iy, ix], ret)
+        return ret
 
     dist = np.minimum(
         np.minimum(dist_at(iym, ixm), dist_at(iym, ixp)),
@@ -111,26 +139,55 @@ def check_loop(warp_A_B, warp_B_A):
 
 def updateUncertaintyWithLoops(warp_A_B, warp_B_A, confidence_A_B, confidence_B_A, threshold):
     """
-    Zero out confidence values where the round-trip warp error exceeds a threshold.
+    Zero out confidences for matches that fail a zoom-tolerant loop-closure check.
 
-    Calls :func:`check_loop` to obtain per-pixel loop errors and sets both
-    ``confidence_A_B`` and ``confidence_B_A`` to 0 at all pixels whose error
-    is greater than ``threshold``. Modifies the confidence arrays in-place.
+    A naive A→B→A round-trip check breaks under zoom: when image B is zoomed
+    out relative to A (many A pixels land on the same B pixel), the B pixel
+    maps back to only one A pixel, so most of those A pixels incur a large
+    A→B→A error even though the matches are geometrically correct.
+
+    To handle this, the check uses the B→A→B error at the landing spot as an
+    escape hatch.  In the zoom-out scenario, the B pixel's own B→A→B error is
+    small (it maps to a unique A pixel which maps back correctly), so the match
+    is correctly accepted.  Conversely, when zooming in (B is higher-res than
+    A), the A→B→A error is small, so the check is valid in the traditional
+    sense.  A match is only rejected when both loop directions are
+    inconsistent.
+
+    The check proceeds in two steps:
+
+    1. Compute the B→A→B round-trip error for every B pixel (``dist_B_A``).
+    2. For every A pixel, compute
+       ``min(A→B→A error, dist_B_A at the B landing spot)`` (``dist_A_B``).
+
+    A pixel is marked invalid when ``dist_A_B > threshold``, i.e. when
+    **both** its A→B→A error **and** the B→A→B error at its landing spot
+    exceed the threshold.
+
+    Both ``confidence_A_B`` and ``confidence_B_A`` are zeroed for invalid
+    A-space pixels in-place.
 
     Args:
-        warp_A_B (numpy.ndarray): Dense warp from A to B, shape (H, W, 3).
-        warp_B_A (numpy.ndarray): Dense warp from B to A, shape (H, W, 3).
-        confidence_A_B (numpy.ndarray): Confidence map for A→B, shape (H, W, 1).
-            Modified in-place.
-        confidence_B_A (numpy.ndarray): Confidence map for B→A, shape (H, W, 1).
-            Modified in-place.
+        warp_A_B (numpy.ndarray): Forward warp of shape (H, W, 2) with
+            normalised [0, 1] coordinates mapping pixels from A to B.
+        warp_B_A (numpy.ndarray): Backward warp of shape (H, W, 2) with
+            normalised [0, 1] coordinates mapping pixels from B to A.
+        confidence_A_B (numpy.ndarray): Confidence map of shape (H, W, C)
+            for the A→B direction; modified in-place.
+        confidence_B_A (numpy.ndarray): Confidence map of shape (H, W, C)
+            for the B→A direction; modified in-place.
         threshold (float): Maximum acceptable round-trip error in pixels.
+            A pixel is invalidated only when both loop errors exceed this value.
     """
-    dist = check_loop(warp_A_B, warp_B_A)
-    if dist is None:
+    dist_B_A = check_loop(warp_B_A, warp_A_B, None)
+    if dist_B_A is None:
         return
 
-    invalid = (dist > threshold)[..., 0]  # shape (H, W)
+    dist_A_B = check_loop(warp_A_B, warp_B_A, dist_B_A)
+    if dist_A_B is None:
+        return
+
+    invalid = (dist_A_B > threshold)[..., 0]  # shape (H, W)
     confidence_A_B[invalid] = 0.0
     confidence_B_A[invalid] = 0.0
 
@@ -242,7 +299,7 @@ def compute_densematches(inputSfMData, imagePairsList, minConfidence, outputWarp
                 
                 # Effectively call roma processing
                 logging.info(f"Start processing")
-                preds = model.match(imA, imB)
+                preds = model.match(imA, imB, output_device="cpu")
                 logging.info(f"end processing")
 
                 # Convert output to required format
