@@ -36,21 +36,25 @@ def max_pool_confidence(confidence, radiusMP):
 
     kernelSize = radiusMP * 2 + 1
 
-    # Add a unique per-pixel tiebreaker so that within each window only one pixel
-    # can match the pooled maximum, even when multiple pixels share the same value.
-    tiebreaker = np.arange(confidence2d.size, dtype=np.float32).reshape(confidence2d.shape)
-    tiebreaker *= 1e-10 / (confidence2d.max() + 1e-12)
-    confidence2d_tb = confidence2d + tiebreaker
+    # Confidence is quantized (uint8/255), so large flat regions share the exact same
+    # float value. To ensure exactly one winner per window, add a per-pixel tiebreaker
+    # in float64. The tiebreaker must be:
+    #   - larger than float64 epsilon at the max confidence value, so it survives arithmetic
+    #   - smaller than the minimum spacing between distinct quantized levels (1/255 ~ 3.9e-3)
+    # Max tiebreaker = 1e-7, which satisfies both constraints.
+    c64 = confidence2d.astype(np.float64)
+    tiebreaker = np.arange(c64.size, dtype=np.float64).reshape(c64.shape) * (1e-7 / c64.size)
+    c_tb = c64 + tiebreaker
 
-    confidenceTensor = torch.from_numpy(np.ascontiguousarray(confidence2d_tb)).unsqueeze(0).unsqueeze(0)
-    pooled = F.max_pool2d(confidenceTensor, kernel_size=kernelSize, stride=1, padding=radiusMP)
-    pooled = pooled.squeeze(0).squeeze(0).numpy()
+    local_max = scipy.ndimage.maximum_filter(c_tb, size=kernelSize, mode='nearest')
 
-    confidence2d = np.where(confidence2d_tb == pooled, confidence2d, 0)
+    # A pixel wins iff its tiebroken value equals the window maximum.
+    # Return the original (non-tiebroken) value so the output magnitudes are unchanged.
+    result = np.where(c_tb == local_max, confidence2d, 0.0)
     if confidence.ndim == 3:
-        confidence2d = confidence2d[:, :, np.newaxis]
+        result = result[:, :, np.newaxis]
 
-    return confidence2d
+    return result
 
 def kde(x, std = 0.1):
     """
