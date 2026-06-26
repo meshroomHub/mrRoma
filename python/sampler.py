@@ -7,8 +7,7 @@ import re
 from pathlib import Path
 import json
 import logging
-import torch
-import torch.nn.functional as F
+from concurrent.futures import ProcessPoolExecutor
 import h5py, hdf5plugin
 
 def max_pool_confidence(confidence, radiusMP):
@@ -429,6 +428,81 @@ def get_matches(coords, warp, confidence):
     
     return ret
 
+
+def _process_reference(args):
+    """Worker: build uncertainties, sample, and save output for one reference image."""
+    referenceId, pairs, iinfos, warpArchive, confidenceArchive, filtersByPair, minConfidence, maxMatches, radiusMP, samplesFolder = args
+
+    logging.info(f"Processing reference #{referenceId}")
+
+    with h5py.File(warpArchive, "r") as f_warp_h5, \
+         h5py.File(confidenceArchive, "r") as f_conf_h5:
+
+        uncertaintiesByPair = build_uncertainties(iinfos, f_warp_h5, f_conf_h5, pairs, filtersByPair, minConfidence)
+        if len(uncertaintiesByPair) == 0:
+            logging.info(f"No uncertainties for reference #{referenceId}")
+            return
+
+        grouped = None
+        for item in uncertaintiesByPair:
+            if grouped is None:
+                grouped = uncertaintiesByPair[item].copy()
+            else:
+                #mask = (grouped == 0) | (uncertaintiesByPair[item] == 0)
+                grouped += uncertaintiesByPair[item]
+                #grouped[mask] = 0
+
+        reference_iinfo = iinfos[referenceId]
+        samples_A_B = get_samples(grouped, 0.0, maxMatches, radiusMP)
+        if len(samples_A_B.shape) == 1:
+            logging.info(f"No valid samples for reference #{referenceId}")
+            return
+
+        #Compute scale of the features
+        wscale = math.log(float(reference_iinfo.width) / float(grouped.shape[1]), 2)
+        hscale = math.log(float(reference_iinfo.height) / float(grouped.shape[0]), 2)
+        scale = max(wscale, hscale)
+
+        #scale to original size
+        scaledSamples = np.zeros((samples_A_B.shape[0], 4))
+        scaledSamples[:, 0] = samples_A_B[:, 0] * reference_iinfo.width
+        scaledSamples[:, 1] = samples_A_B[:, 1] * reference_iinfo.height
+        scaledSamples[:, 2] = 1.0
+        scaledSamples[:, 3] = scale
+
+        path_output = os.path.join(samplesFolder, str(referenceId))
+        np.save(path_output, scaledSamples)
+
+        # loop over pairs of images
+        for item in uncertaintiesByPair:
+            ref_id = item[0]
+            otherId = item[1]
+
+            ref_iinfo = iinfos[ref_id]
+            other_iinfo = iinfos[otherId]
+
+            pair_string = str(ref_id) + "_" + str(otherId)
+
+            #load images
+            if pair_string not in f_warp_h5:
+                logging.warning(f"Warp not found for pair {pair_string}, skipping.")
+                continue
+            warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
+
+            confidence_A_B = uncertaintiesByPair[item]
+            match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
+
+            #scale to original size
+            scaledSamples = np.zeros((match_A_B.shape[0], 4))
+            scaledSamples[:, 0] = match_A_B[:, 0] * other_iinfo.width
+            scaledSamples[:, 1] = match_A_B[:, 1] * other_iinfo.height
+            scaledSamples[:, 2] = match_A_B[:, 2]
+            scaledSamples[:, 3] = scale
+
+            path_output = os.path.join(samplesFolder, str(ref_id) + "_" + str(otherId))
+            np.save(path_output, scaledSamples)
+
+
 def compute_samples(inputSfMData, imagePairsList, warpArchive, confidenceArchive, samplesFolder, filtersFolder, minConfidence, maxMatches, radiusMP, rangeIteration, rangeBlocksCount):
     """
     Extract and save feature samples and their matches from dense warp fields.
@@ -499,85 +573,13 @@ def compute_samples(inputSfMData, imagePairsList, warpArchive, confidenceArchive
         
     refsToProcess = refsToProcess[rangeStart:rangeEnd]
 
-    with h5py.File(warpArchive, "r") as f_warp_h5, \
-         h5py.File(confidenceArchive, "r") as f_conf_h5:
-
-        #Loop over all reference images
-        for referenceId in refsToProcess:
-
-            # Retrieve all pairs for this reference image
-            pairs = plistByRef[referenceId]
-            
-            logging.info(f"Processing reference #{referenceId}")
-
-            # Load uncertainties and store them using pair as key
-            uncertaintiesByPair = build_uncertainties(iinfos, f_warp_h5, f_conf_h5, pairs, filtersByPair, minConfidence)
-            if len(uncertaintiesByPair) == 0:
-                logging.info(f"No uncertainties for reference #{referenceId}")
-                continue
-
-            #we sum the certainties together for the same reference image
-            #We also sample once for all pairs with the same reference image
-            grouped = None
-            for item in uncertaintiesByPair:
-                if grouped is None:
-                    grouped = uncertaintiesByPair[item].copy()
-                else:
-                    #mask = (grouped == 0) | (uncertaintiesByPair[item] == 0)
-                    grouped += uncertaintiesByPair[item]
-                    #grouped[mask] = 0
-            
-            reference_iinfo = iinfos[referenceId]
-            samples_A_B = get_samples(grouped, 0.0, maxMatches, radiusMP)
-            if len(samples_A_B.shape) == 1:
-                logging.info(f"No valid samples for reference #{referenceId}")
-                continue
-
-            #Compute scale of the features
-            wscale = math.log(float(reference_iinfo.width) / float(grouped.shape[1]), 2)
-            hscale = math.log(float(reference_iinfo.height) / float(grouped.shape[0]), 2)
-            scale = max(wscale, hscale)
-
-            #scale to original size
-            scaledSamples = np.zeros((samples_A_B.shape[0], 4))
-            scaledSamples[:, 0] = samples_A_B[:, 0] * reference_iinfo.width 
-            scaledSamples[:, 1] = samples_A_B[:, 1] * reference_iinfo.height
-            scaledSamples[:, 2] = 1.0
-            scaledSamples[:, 3] = scale
-
-            path_output = os.path.join(samplesFolder, str(referenceId))
-            np.save(path_output, scaledSamples)
-
-            # loop over pairs of images
-            for item in uncertaintiesByPair :
-
-                referenceId = item[0]
-                otherId = item[1]
-
-                reference_iinfo = iinfos[referenceId]
-                other_iinfo = iinfos[otherId]
-
-                pair_string = str(referenceId) + "_" + str(otherId)
-
-                #load images
-                if pair_string not in f_warp_h5:
-                    logging.warning(f"Warp not found for pair {pair_string}, skipping.")
-                    continue
-                warp_A_B = f_warp_h5[pair_string][()].astype(np.float32)
-                
-                confidence_A_B = uncertaintiesByPair[item]
-                match_A_B = get_matches(samples_A_B, warp_A_B, confidence_A_B)
-
-                #scale to original size
-                scaledSamples = np.zeros((match_A_B.shape[0], 4))
-                scaledSamples[:, 0] = match_A_B[:, 0] * other_iinfo.width
-                scaledSamples[:, 1] = match_A_B[:, 1] * other_iinfo.height
-                scaledSamples[:, 2] = match_A_B[:, 2]
-                scaledSamples[:, 3] = scale
-
-                #scale to original size
-                path_output = os.path.join(samplesFolder, str(referenceId) + "_" + str(otherId))
-                np.save(path_output, scaledSamples)
+    args_list = [
+        (referenceId, plistByRef[referenceId], iinfos, warpArchive, confidenceArchive,
+         filtersByPair, minConfidence, maxMatches, radiusMP, samplesFolder)
+        for referenceId in refsToProcess
+    ]
+    with ProcessPoolExecutor() as executor:
+        list(executor.map(_process_reference, args_list))
 
 if __name__ == '__main__':
     import argparse

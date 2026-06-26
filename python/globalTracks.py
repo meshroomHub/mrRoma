@@ -62,7 +62,7 @@ def filter_matches(inputSfMData, existingTracks, outputFilename):
     for trackId, coords in romaCoords.items():
         closeInView[trackId] = {}
         for viewId, (x, y) in coords.items():
-            indices = trees[viewId].query_ball_point([x, y], r=2.0)
+            indices = trees[viewId].query_ball_point([x, y], r=5.0)
             for i in indices:
                 otherId = tracksPerView[viewId][i][0]
                 if otherId == trackId:
