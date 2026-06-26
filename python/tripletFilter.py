@@ -1,10 +1,63 @@
 from common import *
 
-from itertools import permutations
+from itertools import combinations
+from concurrent.futures import ProcessPoolExecutor
 import logging
 import h5py, hdf5plugin
+import numpy as np
 from pyalicevision import matching as avmatch  
 from pyalicevision import feature as avfeat
+
+
+def _process_pair(args):
+    """Worker: compute consistent (t1, t2) feature-key pairs for one image pair."""
+    pair, features, warpArchive, confidenceArchive, tau = args
+    pair_string = str(pair[0]) + "_" + str(pair[1])
+    result = set()
+
+    with h5py.File(warpArchive, "r") as f_warp_h5, \
+         h5py.File(confidenceArchive, "r") as f_conf_h5:
+
+        if pair_string not in f_warp_h5 or pair_string not in f_conf_h5:
+            return result
+
+        warp = f_warp_h5[pair_string][()].astype(np.float32)
+
+        H, W = warp.shape[0], warp.shape[1]
+
+        coords = np.array([[f[0][2], f[0][3], f[1][2], f[1][3]] for f in features], dtype=np.float32)
+
+        ixm = np.floor(coords[:, 0]).astype(int)
+        iym = np.floor(coords[:, 1]).astype(int)
+        ixp = ixm + 1
+        iyp = iym + 1
+
+        in_bounds = (ixm >= 0) & (iym >= 0) & (ixp < W) & (iyp < H)
+
+        ixm_c = np.clip(ixm, 0, W - 1)
+        iym_c = np.clip(iym, 0, H - 1)
+        ixp_c = np.clip(ixp, 0, W - 1)
+        iyp_c = np.clip(iyp, 0, H - 1)
+
+        corner_iy = np.stack([iym_c, iym_c, iyp_c, iyp_c])
+        corner_ix = np.stack([ixm_c, ixp_c, ixm_c, ixp_c])
+
+        px = warp[corner_iy, corner_ix, 0] * W
+        py = warp[corner_iy, corner_ix, 1] * H
+        dx = px - coords[np.newaxis, :, 2]
+        dy = py - coords[np.newaxis, :, 3]
+        dists = np.sqrt(dx * dx + dy * dy)
+
+        best_idx = np.argmin(dists, axis=0)
+        n_idx = np.arange(len(features))
+        best_dist = dists[best_idx, n_idx]
+        consistent = in_bounds & (best_dist < tau)
+
+        for i, (t1, t2) in enumerate(features):
+            if consistent[i]:
+                result.add(((t1[0], t1[1]), (t2[0], t2[1])))
+
+    return result
 
 def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive, featuresFolder, matchesFolder, output):
 
@@ -45,6 +98,24 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
     # For each referencePoints, list the associated otherPoints matched in other nodes.
     dictTracks = dict()
 
+    # Cache loaded features per (viewId, desc) to avoid redundant disk reads
+    features_cache = dict()
+    
+    def get_features(viewId, desc):
+        key = (viewId, desc)
+        if key not in features_cache:
+            desc_str = avfeat.EImageDescriberType_enumToString(desc)
+            regions = avfeat.SiftRegions()
+            regions.Load(f"{featuresFolder}/{viewId}.{desc_str}.feat", f"{featuresFolder}/{viewId}.{desc_str}.desc")
+            
+            scaley = romaHeight / iinfos[viewId].height
+            scalex = romaWidth / iinfos[viewId].width
+
+            features_cache[key] = np.array([[f.x() * scalex, f.y() * scaley] for f in regions.Features()], dtype=np.float32)
+
+        return features_cache[key]
+
+    logging.info("Building reference centered point information.")
     for (pairViews, matchesPerDescs) in input_matches.items():
 
         referenceId = pairViews[0]
@@ -52,36 +123,19 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
 
         if not pairViews in pairsToProcess:
             continue
-        
-        perdesc = avmatch.MatchesPerDescType()
-
-        # Compute the scale to apply to convert from image to roma scale
-        refScaleY = romaHeight / iinfos[referenceId].height
-        refScaleX = romaWidth / iinfos[referenceId].width
-        otherScaleY = romaHeight / iinfos[otherId].height
-        otherScaleX = romaWidth / iinfos[otherId].width
 
         for (desc, matchesPerDesc) in matchesPerDescs.items():
-            
-            #load features for both images
-            regionsRef = avfeat.SiftRegions()
-            regionsOther = avfeat.SiftRegions()
-            regionsRef.Load(f"{featuresFolder}/{referenceId}.{avfeat.EImageDescriberType_enumToString(desc)}.feat", f"{featuresFolder}/{referenceId}.{avfeat.EImageDescriberType_enumToString(desc)}.desc")
-            regionsOther.Load(f"{featuresFolder}/{otherId}.{avfeat.EImageDescriberType_enumToString(desc)}.feat", f"{featuresFolder}/{otherId}.{avfeat.EImageDescriberType_enumToString(desc)}.desc")
-            featuresRef = regionsRef.Features()
-            featuresOther = regionsOther.Features()
+
+            featuresRef = get_features(referenceId, desc)
+            featuresOther = get_features(otherId, desc)
 
             for match in matchesPerDesc:
-                
-                # Retrieve coordinates
-                pRef = featuresRef[match._i]
-                pOther = featuresOther[match._j]
 
                 # Scale points to ROMA scale
-                ox = pOther.x() * otherScaleX
-                oy = pOther.y() * otherScaleY
-                rx = pRef.x() * refScaleX
-                ry = pRef.y() * refScaleY
+                rx = featuresRef[match._i, 0]
+                ry = featuresRef[match._i, 1]
+                ox = featuresOther[match._j, 0]
+                oy = featuresOther[match._j, 1]
 
                 # Store the otherTuple to the list of Tuples attached to the reference point
                 refTuple = (referenceId, match._i, rx, ry)
@@ -91,8 +145,9 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
     # Create a list of pairs of points to check per pair of images
     # Indexing per pair of images enable to factorize loading of warp images
     pairsPerReference = dict()
+    logging.info("Building pairsPerReference.")
     for referenceTuple, vecOtherTuples in dictTracks.items():
-        for t1, t2 in permutations(vecOtherTuples, 2):
+        for t1, t2 in combinations(vecOtherTuples, 2):
             viewPair = (t1[0], t2[0])
             featureIds = (t1, t2)
             pairsPerReference.setdefault(viewPair, []).append(featureIds)
@@ -105,54 +160,14 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
     consistent_pairs = set()
 
     # Read content from warp
-    with h5py.File(warpArchive, "r") as f_warp_h5, \
-         h5py.File(confidenceArchive, "r") as f_conf_h5:
-
-        for pair, features in pairsPerReference.items():
-
-            pair_string = str(pair[0]) + "_" + str(pair[1])
-            if pair_string not in f_warp_h5 or pair_string not in f_conf_h5:
-                continue
-
-            warp = f_warp_h5[pair_string][()].astype(np.float32)
-            conf = f_conf_h5[pair_string][()].astype(np.float32) / 255.0
-
-            H, W = warp.shape[0], warp.shape[1]
-
-            # Source (t1) and target (t2) coordinates already in Roma space
-            coords1 = np.array([[f[0][2], f[0][3]] for f in features], dtype=np.float32)  # (N, 2) x,y
-            coords2 = np.array([[f[1][2], f[1][3]] for f in features], dtype=np.float32)  # (N, 2) x,y
-
-            ixm = np.floor(coords1[:, 0]).astype(int)
-            iym = np.floor(coords1[:, 1]).astype(int)
-            ixp = ixm + 1
-            iyp = iym + 1
-
-            in_bounds = (ixm >= 0) & (iym >= 0) & (ixp < W) & (iyp < H)
-
-            ixm_c = np.clip(ixm, 0, W - 1)
-            iym_c = np.clip(iym, 0, H - 1)
-            ixp_c = np.clip(ixp, 0, W - 1)
-            iyp_c = np.clip(iyp, 0, H - 1)
-
-            # Stack all 4 corners: shape (4, N)
-            corner_iy = np.stack([iym_c, iym_c, iyp_c, iyp_c])
-            corner_ix = np.stack([ixm_c, ixp_c, ixm_c, ixp_c])
-
-            px = warp[corner_iy, corner_ix, 0] * W   # (4, N)
-            py = warp[corner_iy, corner_ix, 1] * H   # (4, N)
-            dx = px - coords2[np.newaxis, :, 0]       # (4, N)
-            dy = py - coords2[np.newaxis, :, 1]       # (4, N)
-            dists = np.sqrt(dx * dx + dy * dy)        # (4, N)
-
-            best_idx = np.argmin(dists, axis=0)       # (N,)
-            n_idx = np.arange(len(features))
-            best_dist = dists[best_idx, n_idx]
-            consistent = in_bounds & (best_dist < tau)
-
-            for i, (t1, t2) in enumerate(features):
-                if consistent[i]:
-                    consistent_pairs.add(((t1[0], t1[1]), (t2[0], t2[1])))
+    logging.info("Building consistent_pairs.")
+    args_list = [
+        (pair, features, warpArchive, confidenceArchive, tau)
+        for pair, features in pairsPerReference.items()
+    ]
+    with ProcessPoolExecutor() as executor:
+        for partial_pairs in executor.map(_process_pair, args_list):
+            consistent_pairs.update(partial_pairs)
 
     # Per-star pruning: for each star (reference point + its matched leaves),
     # iteratively remove the leaf with the lowest triangle-support ratio until
@@ -169,7 +184,7 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
     #   ref_key  = (refViewId,   refFeatIdx)
     #   leaf_key = (otherViewId, otherFeatIdx)
     surviving_matches = set()
-
+    logging.info("Building surviving_matches.")
     for referenceTuple, vecOtherTuples in dictTracks.items():
         ref_key = (referenceTuple[0], referenceTuple[1])
         leaves = list(vecOtherTuples)
@@ -209,7 +224,7 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
 
     # Keep only pairwise matches where the specific ref->leaf edge survived pruning.
     output_matches = avmatch.PairwiseMatches()
-
+    logging.info("Building output_matches.")
     for (pairViews, matchesPerDescs) in input_matches.items():
         if pairViews not in pairsToProcess:
             continue
@@ -231,6 +246,7 @@ def filter_matches(inputSfMData, imagePairsList, warpArchive, confidenceArchive,
         if len(perdesc) > 0:
             output_matches[pairViews] = perdesc
 
+    logging.info("Saving output_matches.")
     avmatch.Save(output_matches, output, "txt", False, "")
 
 
