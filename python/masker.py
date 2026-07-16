@@ -14,6 +14,55 @@ import h5py, hdf5plugin
 from pathlib import Path
 
 
+def _acquire_archive_lock(lock_path, timeout_s=600.0, poll_s=0.1, stale_lock_s=3600.0):
+    """
+    Acquire an inter-process lock file with timeout and stale lock handling.
+
+    Args:
+        lock_path (str): Path of the lock file to create.
+        timeout_s (float): Maximum time to wait before failing.
+        poll_s (float): Sleep duration between retries.
+        stale_lock_s (float): If an existing lock is older than this threshold,
+            it is considered stale and removed.
+    """
+    start = time.monotonic()
+
+    while True:
+        try:
+            lfd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(lfd, "w") as lock_fd:
+                lock_fd.write(f"pid={os.getpid()}\n")
+                lock_fd.write(f"created={time.time()}\n")
+            return
+        except FileExistsError:
+            # Try to recover from stale lock files left behind by crashes.
+            try:
+                lock_age = time.time() - os.path.getmtime(lock_path)
+                if lock_age > stale_lock_s:
+                    logging.warning(f"Removing stale lock file: {lock_path}")
+                    os.unlink(lock_path)
+                    continue
+            except FileNotFoundError:
+                # Lost race: lock disappeared between exists check and stat.
+                continue
+
+            waited = time.monotonic() - start
+            if waited >= timeout_s:
+                raise TimeoutError(
+                    f"Timed out after {timeout_s:.1f}s waiting for lock: {lock_path}"
+                )
+
+            time.sleep(poll_s)
+
+
+def _release_archive_lock(lock_path):
+    """Release lock file if it exists."""
+    try:
+        os.unlink(lock_path)
+    except FileNotFoundError:
+        pass
+
+
 def parse_masks_folders(masksFolders):
     """
     Normalise the masks-folder argument into a deduplicated list of path strings.
@@ -53,23 +102,24 @@ def parse_masks_folders(masksFolders):
     return [raw]
 
 
-def find_mask_path(masksFolders, mask_filename):
+def find_mask_paths(masksFolders, mask_filename):
     """
-    Search a list of folders for a mask file and return the first match.
+    Search a list of folders for a mask file and return all matches.
 
     Args:
         masksFolders (list[str]): Ordered list of directories to search.
         mask_filename (str): Filename of the mask (e.g. ``"frame_0001.png"``).
 
     Returns:
-        str | None: Full path to the first existing mask file, or ``None`` if
-            the file is not found in any of the provided folders.
+        list[str]: Paths to all existing mask files found across the provided
+            folders, in order. Empty list if none are found.
     """
+    paths = []
     for folder in masksFolders:
         candidate = os.path.join(folder, mask_filename)
         if os.path.exists(candidate):
-            return candidate
-    return None
+            paths.append(candidate)
+    return paths
 
 
 def apply_masks(inputSfMData, imagePairsList, warpArchive, confidenceArchive, masksFolders, masksExtension, outputConfidenceArchive, rangeIteration, rangeBlocksCount):
@@ -168,29 +218,39 @@ def apply_masks(inputSfMData, imagePairsList, warpArchive, confidenceArchive, ma
         mask_filename = f"{stem}.{masksExtension}"
 
         # Build the path to the correct mask
-        path_mask = find_mask_path(masksFolders, mask_filename)
+        mask_paths = find_mask_paths(masksFolders, mask_filename)
 
         #Build mask for reference
-        if path_mask is not None:
-            logging.info(f"Found reference mask at {path_mask}")
-            maskLarge = open_image(path_mask, isBW=True, isFloat=False)
+        if mask_paths:
+            logging.info(f"Found reference mask(s) at {mask_paths}")
+            maskLarge = open_image(mask_paths[0], isBW=True, isFloat=False)
             maskSmall = avimage.Image_uchar()
-            avimage.resampleImage(warpWidth, warpHeight, maskLarge, maskSmall, False);
+            avimage.resampleImage(warpWidth, warpHeight, maskLarge, maskSmall, False)
             maskReference = np.squeeze(maskSmall.getNumpyArray())
+            for extra_path in mask_paths[1:]:
+                maskLargeExtra = open_image(extra_path, isBW=True, isFloat=False)
+                maskSmallExtra = avimage.Image_uchar()
+                avimage.resampleImage(warpWidth, warpHeight, maskLargeExtra, maskSmallExtra, False)
+                maskReference = np.minimum(maskReference, np.squeeze(maskSmallExtra.getNumpyArray()))
 
         # Replace the extension with the mask extension
         stem = os.path.splitext(os.path.basename(other_iinfo.path))[0]
         mask_filename = f"{stem}.{masksExtension}"
 
         # Build the path to the correct mask
-        path_mask = find_mask_path(masksFolders, mask_filename)
+        mask_paths = find_mask_paths(masksFolders, mask_filename)
 
-        if path_mask is not None:
-            logging.info(f"Found comparison mask at {path_mask}")
-            maskLarge = open_image(path_mask, isBW=True, isFloat=False)
+        if mask_paths:
+            logging.info(f"Found comparison mask(s) at {mask_paths}")
+            maskLarge = open_image(mask_paths[0], isBW=True, isFloat=False)
             maskSmall = avimage.Image_uchar()
-            avimage.resampleImage(warpWidth, warpHeight, maskLarge, maskSmall, False);
+            avimage.resampleImage(warpWidth, warpHeight, maskLarge, maskSmall, False)
             maskOther = np.squeeze(maskSmall.getNumpyArray())
+            for extra_path in mask_paths[1:]:
+                maskLargeExtra = open_image(extra_path, isBW=True, isFloat=False)
+                maskSmallExtra = avimage.Image_uchar()
+                avimage.resampleImage(warpWidth, warpHeight, maskLargeExtra, maskSmallExtra, False)
+                maskOther = np.minimum(maskOther, np.squeeze(maskSmallExtra.getNumpyArray()))
 
         #make sure masks exist
         if maskReference is None:
@@ -212,20 +272,14 @@ def apply_masks(inputSfMData, imagePairsList, warpArchive, confidenceArchive, ma
         
         #write output
         lock_path = f"{outputConfidenceArchive}.lock"
-        while True:
-            try:
-                _lfd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(_lfd)
-                break
-            except FileExistsError:
-                time.sleep(0.1)
+        _acquire_archive_lock(lock_path)
         try:
             with h5py.File(outputConfidenceArchive, "a") as f_out:
                 if pair_string in f_out:
                     del f_out[pair_string]
                 f_out.create_dataset(pair_string, data=(confidence_A_B * 255.0).astype(np.uint8), dtype=np.uint8, **hdf5plugin.LZ4(), chunks=True)
         finally:
-            os.unlink(lock_path)
+            _release_archive_lock(lock_path)
 
 if __name__ == '__main__':
     import argparse
