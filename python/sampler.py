@@ -260,8 +260,119 @@ def build_uncertainties(iinfos, warpArchive, confidenceArchive, imagePairsList, 
     
     return uncertaintiesByPair
 
-
 def get_samples(confidence, minConfidence, maxMatches, radiusMP):
+    """
+    Sample high-confidence pixel coordinates with weighted hard-radius exclusion.
+
+    Each selected pixel is drawn with probability proportional to its remaining
+    confidence value. After a pixel is selected, all pixels within ``radiusMP``
+    pixels are removed from the sampling distribution, so returned coordinates
+    are not closer than ``radiusMP`` pixels from each other.
+
+    Args:
+        confidence (numpy.ndarray): Confidence map, shape (H, W) or (H, W, 1).
+        minConfidence (float): Minimum confidence threshold; pixels below are excluded.
+        maxMatches (int): Maximum number of samples to return.
+        radiusMP (int): Minimum exclusion radius in pixels.
+
+    Returns:
+        numpy.ndarray: Array of shape (N, 2) with normalised (u, v) coordinates
+            of the selected samples, where N <= ``maxMatches``.
+    """
+    if maxMatches <= 0:
+        return np.empty((0, 2), dtype=np.float32)
+    
+    np.random.seed(0)
+
+    confidence2d = confidence.squeeze()
+    if confidence2d.ndim != 2:
+        raise ValueError("confidence must be a 2d array or a single-channel image")
+
+    height = confidence2d.shape[0]
+    width = confidence2d.shape[1]
+    weights = confidence2d.astype(np.float64, copy=True)
+    weights[weights < minConfidence] = 0.0
+    weights[~np.isfinite(weights)] = 0.0
+
+    flat_weights = weights.reshape(-1)
+    if flat_weights.sum() <= 0.0:
+        return np.empty((0, 2), dtype=np.float32)
+
+    tree = flat_weights.copy()
+    for i in range(1, tree.size + 1):
+        parent = i + (i & -i)
+        if parent <= tree.size:
+            tree[parent - 1] += tree[i - 1]
+
+    def add_weight(index, delta):
+        index += 1
+        while index <= tree.size:
+            tree[index - 1] += delta
+            index += index & -index
+
+    def total_weight():
+        total = 0.0
+        index = tree.size
+        while index > 0:
+            total += tree[index - 1]
+            index -= index & -index
+        return total
+
+    def sample_weighted_index(target):
+        index = 0
+        bit = 1 << (tree.size.bit_length() - 1)
+        while bit:
+            next_index = index + bit
+            if next_index <= tree.size and tree[next_index - 1] < target:
+                target -= tree[next_index - 1]
+                index = next_index
+            bit >>= 1
+        return index
+
+    disk_offsets = []
+    if radiusMP > 0:
+        radius2 = radiusMP * radiusMP
+        for dy in range(-radiusMP, radiusMP + 1):
+            for dx in range(-radiusMP, radiusMP + 1):
+                if dy * dy + dx * dx <= radius2:
+                    disk_offsets.append((dy, dx))
+    else:
+        disk_offsets.append((0, 0))
+
+    selected = []
+    for _ in range(maxMatches):
+        total = total_weight()
+        if total <= 0.0:
+            break
+        
+        target = np.random.random() * total
+        if target <= 0.0:
+            target = np.nextafter(0.0, total)
+
+        flat_index = sample_weighted_index(target)
+        y, x = divmod(flat_index, width)
+        selected.append((x / float(width), y / float(height)))
+
+        for dy, dx in disk_offsets:
+            yy = y + dy
+            xx = x + dx
+            if yy < 0 or yy >= height or xx < 0 or xx >= width:
+                continue
+
+            index = yy * width + xx
+            old_weight = flat_weights[index]
+            if old_weight <= 0.0:
+                continue
+
+            flat_weights[index] = 0.0
+            add_weight(index, -old_weight)
+
+    if len(selected) == 0:
+        return np.empty((0, 2), dtype=np.float32)
+
+    return np.array(selected, dtype=np.float32)
+
+def get_samples_old(confidence, minConfidence, maxMatches, radiusMP):
     """
     Sample a spatially balanced set of high-confidence pixel coordinates.
 
